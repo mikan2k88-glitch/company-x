@@ -129,12 +129,3 @@ async def line_webhook(request: Request):
     except Exception as e:
         logger.error(f"LINE Webhook エラー: {e}")
         return {"status": "error", "detail": str(e)}
-``` eof
-
----
-
-#### 【方法2】 手順書に従って `company_x` フォルダを作成する
-
-右側ドキュメントの **「GitHub＆Render構成・デプロイ手順書」** の STEP 1 〜 STEP 5 に従って、GitHub 上に `company_x` フォルダと関連ファイルを追加コミットします。
-
-ファイルが追加されると `ModuleNotFoundError` は解消され、自動的に正常起動します。
