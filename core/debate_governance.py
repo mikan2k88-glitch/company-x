@@ -29,7 +29,6 @@ class DebateGovernance:
             base_url="https://openrouter.ai/api/v1",
             api_key=self.api_key or "dummy_key"
         )
-        # 固有モデルの廃止・有料化エラーを完全に防ぐ公式無料自動ルーター
         self.critic_model = "openrouter/free"
 
     def execute_debate(self, market_opportunity: Dict[str, Any]) -> Dict[str, Any]:
@@ -75,32 +74,37 @@ class DebateGovernance:
             logger.warning("OPENROUTER_API_KEY 未設定のため、ルールベース判定を適用します。")
             return {"round": round_num, "is_approved": True, "critic_feedback": "Key missing. Rule pass."}
 
-        prompt = (
-            f"あなたは自律型AI企業の厳格なリスク監査役（軍師）です。\n"
-            f"以下の提案に対し、粗利83%未満のリスク、法的リスク、安全面での懸念がないか審査してください。\n"
-            f"提案内容: {json.dumps(proposal, ensure_ascii=False)}\n\n"
-            f"応答は必ず以下のJSONフォーマットのみで返してください:\n"
-            f'{{"is_approved": true, "critic_feedback": "問題なし"}}'
+        system_instruction = "あなたはJSON形式のみで応答するJSON出力APIです。Markdown記法や思考テキストは絶対に出力しないでください。"
+        user_prompt = (
+            f"提案内容: {json.dumps(proposal, ensure_ascii=False)}\n"
+            f"粗利83%未満のリスクや安全面での懸念を審査し、次のJSONオブジェクトのみを返してください: "
+            f'{{"is_approved": true, "critic_feedback": "理由"}}'
         )
 
         try:
             response = self.openrouter_client.chat.completions.create(
                 model=self.critic_model,
-                messages=[{"role": "user", "content": prompt}],
+                messages=[
+                    {"role": "system", "content": system_instruction},
+                    {"role": "user", "content": user_prompt}
+                ],
+                response_format={"type": "json_object"},
                 timeout=12.0
             )
             content = response.choices[0].message.content or ""
 
-            match = re.search(r"\{.*\}", content, re.DOTALL)
+            # 最も内側の最短JSONオブジェクトを抽出する正規表現へ見直し
+            match = re.search(r"\{[^{}]*\"is_approved\"[^{}]*\}", content, re.DOTALL)
             if match:
                 parsed = json.loads(match.group(0))
-                return {
-                    "round": round_num,
-                    "is_approved": bool(parsed.get("is_approved", True)),
-                    "critic_feedback": str(parsed.get("critic_feedback", "N/A"))
-                }
+            else:
+                parsed = json.loads(content)
 
-            raise ValueError("JSONフォーマットが抽出できませんでした")
+            return {
+                "round": round_num,
+                "is_approved": bool(parsed.get("is_approved", True)),
+                "critic_feedback": str(parsed.get("critic_feedback", "N/A"))
+            }
 
         except Exception as e:
             logger.warning(f"OpenRouter 応答解析スキップ/フォールバック: {e}")
