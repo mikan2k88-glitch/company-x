@@ -21,8 +21,7 @@ class DebateGovernance:
 
     def __init__(self, openrouter_api_key: Optional[str] = None):
         self.api_key = openrouter_api_key or os.getenv("OPENROUTER_API_KEY")
-        
-        # APIキーが存在しない場合のログ警告
+
         if not self.api_key:
             logger.warning("OPENROUTER_API_KEY が設定されていません。環境変数を確認してください。")
 
@@ -30,8 +29,8 @@ class DebateGovernance:
             base_url="https://openrouter.ai/api/v1",
             api_key=self.api_key or "dummy_key"
         )
-        # 無料枠で最も応答率の高い安定スラグ
-        self.critic_model = "qwen/qwen-2.5-72b-instruct:free"
+        # 固有モデルの廃止・有料化エラーを完全に防ぐ公式無料自動ルーター
+        self.critic_model = "openrouter/free"
 
     def execute_debate(self, market_opportunity: Dict[str, Any]) -> Dict[str, Any]:
         task_name = market_opportunity.get("task_name", "Unknown Task")
@@ -72,7 +71,6 @@ class DebateGovernance:
         }
 
     def _call_openrouter_critic(self, proposal: Dict[str, Any], round_num: int) -> Dict[str, Any]:
-        # APIキーがない場合は即時フォールバック
         if not self.api_key:
             logger.warning("OPENROUTER_API_KEY 未設定のため、ルールベース判定を適用します。")
             return {"round": round_num, "is_approved": True, "critic_feedback": "Key missing. Rule pass."}
@@ -89,10 +87,10 @@ class DebateGovernance:
             response = self.openrouter_client.chat.completions.create(
                 model=self.critic_model,
                 messages=[{"role": "user", "content": prompt}],
-                timeout=10.0
+                timeout=12.0
             )
             content = response.choices[0].message.content or ""
-            
+
             match = re.search(r"\{.*\}", content, re.DOTALL)
             if match:
                 parsed = json.loads(match.group(0))
@@ -101,7 +99,7 @@ class DebateGovernance:
                     "is_approved": bool(parsed.get("is_approved", True)),
                     "critic_feedback": str(parsed.get("critic_feedback", "N/A"))
                 }
-            
+
             raise ValueError("JSONフォーマットが抽出できませんでした")
 
         except Exception as e:
