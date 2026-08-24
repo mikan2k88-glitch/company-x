@@ -2,7 +2,7 @@
 core/debate_governance.py
 -------------------------
 2R打切り型 AIディベート・ガバナンス
-- 主将 (Gemini) ✕ 軍師 (OpenRouter Active Free Model)
+- 主将 (Gemini) ✕ 軍師 (OpenRouter Auto Free Router)
 - 粗利83%絶対防衛＆サーキットブレーカー
 """
 
@@ -23,8 +23,8 @@ class DebateGovernance:
             base_url="https://openrouter.ai/api/v1",
             api_key=openrouter_api_key or os.getenv("OPENROUTER_API_KEY", "dummy_key")
         )
-        # 確実に稼働する OpenRouter 無料枠スラグに更新
-        self.critic_model = "meta-llama/llama-3.3-70b-instruct:free"
+        # 個別モデルの廃止・有料化エラーを避けるため、OpenRouter公式の無料自動ルーターを採用
+        self.critic_model = "openrouter/free"
 
     def execute_debate(self, market_opportunity: Dict[str, Any]) -> Dict[str, Any]:
         task_name = market_opportunity.get("task_name", "Unknown Task")
