@@ -3,7 +3,7 @@ main.py
 -------
 Gateway X-OS (v3.2 Protocol) FastAPI 統合エントリーポイント
 - カンパニーX 自律成長ループのスケジューラ起動
-- 柔軟なモジュールインポート & LINE Webhook / 実送信対応
+- LINE Webhook 受信時の User ID 自動特定ロジック
 """
 
 import os
@@ -16,32 +16,23 @@ from fastapi import FastAPI, Request, Response
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("gateway_x_main")
 
-# パス追加でインポートの確実性を担保
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+# カレントディレクトリを Python パスに追加
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-# モジュールの柔軟な読み込み
 MODULES_READY = False
 try:
-    try:
-        from core.scout_engine import ScoutEngine
-        from core.debate_governance import DebateGovernance
-        from adapters.gateway_client import GatewayClient
-        from adapters.line_ceo_bot import LineCeoBot
-        from db.company_repository import CompanyRepository
-        logger.info("ルート直下のモジュール (core, adapters) からの読み込みに成功しました。")
-    except ImportError:
-        from company_x.core.scout_engine import ScoutEngine
-        from company_x.core.debate_governance import DebateGovernance
-        from company_x.adapters.gateway_client import GatewayClient
-        from company_x.adapters.line_ceo_bot import LineCeoBot
-        from company_x.db.company_repository import CompanyRepository
-        logger.info("company_x サブモジュールからの読み込みに成功しました。")
+    from core.scout_engine import ScoutEngine
+    from core.debate_governance import DebateGovernance
+    from adapters.gateway_client import GatewayClient
+    from adapters.line_ceo_bot import LineCeoBot
+    from db.company_repository import CompanyRepository
     
+    logger.info("ルート直下のモジュール (core, adapters, db) の読み込みに成功しました。")
     MODULES_READY = True
 except Exception as e:
-    logger.error(f"モジュール読み込み重大エラー: {e}")
+    logger.error(f"モジュール読み込み失敗の詳細: {e}", exc_info=True)
 
-# 自律成長ループの定義
+
 async def run_autonomous_loop():
     if not MODULES_READY:
         logger.warning("モジュール未準備のため自律ループをスキップします。")
@@ -68,11 +59,12 @@ async def run_autonomous_loop():
         }
         repo.save_pnl(pnl_data)
         
-        # LINE Push通知の呼び出し
+        # LINE Push通知の送信
         line_bot.send_pnl_report(pnl_data)
         logger.info("=== カンパニーX 自律成長ループ正常完了 ===")
     except Exception as e:
         logger.error(f"自律成長ループ実行エラー: {e}")
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -80,11 +72,14 @@ async def lifespan(app: FastAPI):
     asyncio.create_task(run_autonomous_loop())
     yield
 
+
 app = FastAPI(title="Gateway X-OS API", lifespan=lifespan)
+
 
 @app.get("/")
 def read_root():
     return {"status": "online", "system": "Gateway X-OS v3.2 Protocol"}
+
 
 @app.post("/mcp/v1/tools/call")
 async def handle_mcp_call(request: Request):
@@ -97,6 +92,7 @@ async def handle_mcp_call(request: Request):
         "price_usd": price_usd,
         "message": "Gateway X-OS execution dispatched successfully."
     }
+
 
 @app.post("/line/webhook")
 async def line_webhook(request: Request):
