@@ -46,7 +46,6 @@ async def run_autonomous_loop():
         line_bot = LineCeoBot()
         repo = CompanyRepository()
 
-        # scout_market() メソッドを呼び出し
         opportunity = scout.scout_market()
         proposal = debate.execute_debate(opportunity)
         execution_result = await gateway.call_mcp_execution(proposal)
@@ -58,7 +57,9 @@ async def run_autonomous_loop():
             "margin": proposal.get("expected_margin", 0.83),
             "status": execution_result.get("status", "SUCCESS")
         }
-        repo.save_pnl(pnl_data)
+        
+        # save_pnl_record メソッドへ統一呼び出し
+        repo.save_pnl_record(pnl_data)
         
         # LINE Push通知の送信
         line_bot.send_pnl_report(pnl_data)
