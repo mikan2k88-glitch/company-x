@@ -46,7 +46,8 @@ async def run_autonomous_loop():
         line_bot = LineCeoBot()
         repo = CompanyRepository()
 
-        opportunity = scout.scan_opportunities()
+        # scout_market() メソッドを呼び出し
+        opportunity = scout.scout_market()
         proposal = debate.execute_debate(opportunity)
         execution_result = await gateway.call_mcp_execution(proposal)
 
