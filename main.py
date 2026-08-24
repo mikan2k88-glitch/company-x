@@ -1,18 +1,31 @@
 import os
-from fastapi import FastAPI, BackgroundTasks, HTTPException
+import asyncio
+import logging
+from fastapi import FastAPI, BackgroundTasks, HTTPException, Request
 from pydantic import BaseModel
 from typing import Optional, Dict, Any
 
-# appディレクトリ配下のモジュール群をインポート
+# ロギング設定
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("gateway_x_main")
+
+# モジュールインポートの安全なハンドリング
 try:
     from app.orchestrator.master import MasterOrchestrator
 except ImportError:
     MasterOrchestrator = None
 
+try:
+    from company_x.main import run_autonomous_loop
+    from company_x.adapters.line_ceo_bot import LineCeoBot
+except ImportError:
+    run_autonomous_loop = None
+    LineCeoBot = None
+
 app = FastAPI(
-    title="Gateway X-OS",
+    title="Gateway X-OS & Company X",
     version="12.0.0",
-    description="Autonomous AI Agent Physical Gateway API"
+    description="Autonomous AI Agent Physical Gateway & Brain System"
 )
 
 # --- Request / Response Models ---
@@ -28,13 +41,38 @@ class FeedbackRequest(BaseModel):
     rating: int
     feedback_text: Optional[str] = None
 
+
+# --- Background Autonomous Loop (カンパニーX 定期実行) ---
+async def background_company_x_scheduler():
+    """Render 上でサーバー起動中に、カンパニーXの自律成長ループをバックグラウンド実行"""
+    logger.info("🤖 カンパニーX バックグラウンド自律スケジューラを起動しました。")
+    while True:
+        try:
+            if run_autonomous_loop:
+                logger.info("🔄 カンパニーX 自律成長ループを実行中...")
+                await run_autonomous_loop()
+            else:
+                logger.warning("company_x モジュールが見つからないため、ループをスキップします。")
+        except Exception as e:
+            logger.error(f"カンパニーX 自律ループ実行エラー: {e}")
+        
+        # 1時間（3600秒）ごとに自律探索・意思決定を実行
+        await asyncio.sleep(3600)
+
+
+@app.on_event("startup")
+async def startup_event():
+    """RenderでのFastAPI起動時に自律AIループを非同期タスクとしてバックグラウンド開始"""
+    asyncio.create_task(background_company_x_scheduler())
+
+
 # --- API Endpoints ---
 @app.get("/")
 def read_root():
     return {
         "status": "OPERATIONAL",
-        "system": "Gateway X-OS Master Orchestrator",
-        "engine": "Gemini 3.7 Flash Dynamic Multi-Agent System"
+        "system": "Gateway X-OS Master Orchestrator & Company X Brain",
+        "engine": "Gemini 3.6/3.7 Flash ✕ OpenRouter Free Multi-Agent System"
     }
 
 @app.post("/mcp/v1/tools/call")
@@ -85,3 +123,16 @@ async def receive_client_feedback(request: FeedbackRequest, background_tasks: Ba
         "status": "SUCCESS",
         "message": "Feedback received. Optimization loop triggered asynchronously."
     }
+
+# --- Yuki社長用 LINE Webhook エンドポイント ---
+@app.post("/webhook/line")
+async def line_webhook(request: Request):
+    """LINE Messaging API からの承認ボタンタップ等の通知を受信"""
+    try:
+        body = await request.json()
+        logger.info(f"LINE Webhook 受信: {body}")
+        # 必要に応じて LINE 承認レスポンスハンドラーを呼び出し
+        return {"status": "ok"}
+    except Exception as e:
+        logger.error(f"LINE Webhook エラー: {e}")
+        return {"status": "error", "detail": str(e)}
