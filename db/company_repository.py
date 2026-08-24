@@ -1,11 +1,14 @@
 """
 db/company_repository.py
 ------------------------
-自社取引履歴・案件パイプラインのSQLite永続化モジュール (WALモード)
+カンパニーX 永続化リポジトリ (SQLite)
 """
 
 import sqlite3
+import logging
 from typing import Dict, Any
+
+logger = logging.getLogger("company_x.repository")
 
 
 class CompanyRepository:
@@ -15,26 +18,42 @@ class CompanyRepository:
 
     def _init_db(self):
         with sqlite3.connect(self.db_path) as conn:
-            conn.execute("PRAGMA journal_mode=WAL;")
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS growth_backlog (
+            cursor = conn.cursor()
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS pnl_records (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    intent TEXT,
+                    revenue_usd REAL,
                     cost_jpy REAL,
-                    price_usd REAL,
+                    profit_usd REAL,
+                    margin REAL,
                     status TEXT,
                     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
                 )
             """)
+            conn.commit()
 
-    def log_decision(self, proposal: Dict[str, Any], status: str):
-        with sqlite3.connect(self.db_path) as conn:
-            conn.execute(
-                "INSERT INTO growth_backlog (intent, cost_jpy, price_usd, status) VALUES (?, ?, ?, ?)",
-                (
-                    proposal.get("intent", ""),
-                    proposal.get("estimated_cost_jpy", 0.0),
-                    proposal.get("target_price_usd", 0.0),
-                    status
-                )
-            )
+    def save_pnl_record(self, pnl_data: Dict[str, Any]) -> bool:
+        """P&LレコードをDBへ保存"""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    INSERT INTO pnl_records (revenue_usd, cost_jpy, profit_usd, margin, status)
+                    VALUES (?, ?, ?, ?, ?)
+                """, (
+                    pnl_data.get("revenue_usd", 0.0),
+                    pnl_data.get("cost_jpy", 0.0),
+                    pnl_data.get("profit_usd", 0.0),
+                    pnl_data.get("margin", 0.0),
+                    pnl_data.get("status", "SUCCESS")
+                ))
+                conn.commit()
+            logger.info("DBへのP&Lレコード保存に成功しました。")
+            return True
+        except Exception as e:
+            logger.error(f"DB保存失敗: {e}")
+            return False
+
+    # エイリアス（互換性確保）
+    def save_pnl(self, pnl_data: Dict[str, Any]) -> bool:
+        return self.save_pnl_record(pnl_data)
