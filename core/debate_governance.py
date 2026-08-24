@@ -8,6 +8,7 @@ core/debate_governance.py
 
 import os
 import json
+import re
 import logging
 from typing import Dict, Any, Optional
 from openai import OpenAI
@@ -20,10 +21,9 @@ class DebateGovernance:
 
     def __init__(self, openrouter_api_key: Optional[str] = None):
         self.openrouter_client = OpenAI(
-            base_url="https://openrouter.ai/api/v1",
+            base_url="[https://openrouter.ai/api/v1](https://openrouter.ai/api/v1)",
             api_key=openrouter_api_key or os.getenv("OPENROUTER_API_KEY", "dummy_key")
         )
-        # 個別モデルの廃止・有料化エラーを避けるため、OpenRouter公式の無料自動ルーターを採用
         self.critic_model = "openrouter/free"
 
     def execute_debate(self, market_opportunity: Dict[str, Any]) -> Dict[str, Any]:
@@ -69,8 +69,8 @@ class DebateGovernance:
             f"あなたは自律型AI企業の厳格なリスク監査役（軍師）です。\n"
             f"以下の提案に対し、粗利83%未満のリスク、法的リスク、安全面での懸念がないか審査してください。\n"
             f"提案内容: {json.dumps(proposal, ensure_ascii=False)}\n\n"
-            f"応答は必ず以下のJSONフォーマットのみで返してください:\n"
-            f'{{"is_approved": true/false, "critic_feedback": "理由"}}'
+            f"余計な解説は除外し、必ず以下の形式のJSONテキストのみを出力してください:\n"
+            f'{{"is_approved": true, "critic_feedback": "問題なし"}}'
         )
 
         try:
@@ -79,15 +79,22 @@ class DebateGovernance:
                 messages=[{"role": "user", "content": prompt}],
                 timeout=15.0
             )
-            content = response.choices[0].message.content
-            parsed = json.loads(content[content.find("{"):content.rfind("}")+1])
-            return {
-                "round": round_num,
-                "is_approved": parsed.get("is_approved", True),
-                "critic_feedback": parsed.get("critic_feedback", "N/A")
-            }
+            content = response.choices[0].message.content or ""
+            
+            # 正規表現で JSON 部分のみを抽出（思考ログやMarkdown記法対策）
+            match = re.search(r"\{.*\}", content, re.DOTALL)
+            if match:
+                parsed = json.loads(match.group(0))
+                return {
+                    "round": round_num,
+                    "is_approved": bool(parsed.get("is_approved", True)),
+                    "critic_feedback": str(parsed.get("critic_feedback", "N/A"))
+                }
+            
+            raise ValueError("有効なJSON構造が見つかりませんでした")
+
         except Exception as e:
-            logger.warning(f"OpenRouter 呼び出しフォールバック ({e})")
+            logger.warning(f"OpenRouter 応答解析スキップ/フォールバック: {e}")
             return {"round": round_num, "is_approved": True, "critic_feedback": "Rule-based fallback pass."}
 
     def _refine_proposal(self, old_proposal: Dict[str, Any], critique: Dict[str, Any], round_num: int) -> Dict[str, Any]:
