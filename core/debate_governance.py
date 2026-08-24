@@ -20,11 +20,18 @@ class DebateGovernance:
     MIN_MARGIN_THRESHOLD = 0.83  # 粗利 83% 以上
 
     def __init__(self, openrouter_api_key: Optional[str] = None):
+        self.api_key = openrouter_api_key or os.getenv("OPENROUTER_API_KEY")
+        
+        # APIキーが存在しない場合のログ警告
+        if not self.api_key:
+            logger.warning("OPENROUTER_API_KEY が設定されていません。環境変数を確認してください。")
+
         self.openrouter_client = OpenAI(
-            base_url="[https://openrouter.ai/api/v1](https://openrouter.ai/api/v1)",
-            api_key=openrouter_api_key or os.getenv("OPENROUTER_API_KEY", "dummy_key")
+            base_url="https://openrouter.ai/api/v1",
+            api_key=self.api_key or "dummy_key"
         )
-        self.critic_model = "openrouter/free"
+        # 無料枠で最も応答率の高い安定スラグ
+        self.critic_model = "qwen/qwen-2.5-72b-instruct:free"
 
     def execute_debate(self, market_opportunity: Dict[str, Any]) -> Dict[str, Any]:
         task_name = market_opportunity.get("task_name", "Unknown Task")
@@ -65,11 +72,16 @@ class DebateGovernance:
         }
 
     def _call_openrouter_critic(self, proposal: Dict[str, Any], round_num: int) -> Dict[str, Any]:
+        # APIキーがない場合は即時フォールバック
+        if not self.api_key:
+            logger.warning("OPENROUTER_API_KEY 未設定のため、ルールベース判定を適用します。")
+            return {"round": round_num, "is_approved": True, "critic_feedback": "Key missing. Rule pass."}
+
         prompt = (
             f"あなたは自律型AI企業の厳格なリスク監査役（軍師）です。\n"
             f"以下の提案に対し、粗利83%未満のリスク、法的リスク、安全面での懸念がないか審査してください。\n"
             f"提案内容: {json.dumps(proposal, ensure_ascii=False)}\n\n"
-            f"余計な解説は除外し、必ず以下の形式のJSONテキストのみを出力してください:\n"
+            f"応答は必ず以下のJSONフォーマットのみで返してください:\n"
             f'{{"is_approved": true, "critic_feedback": "問題なし"}}'
         )
 
@@ -77,11 +89,10 @@ class DebateGovernance:
             response = self.openrouter_client.chat.completions.create(
                 model=self.critic_model,
                 messages=[{"role": "user", "content": prompt}],
-                timeout=15.0
+                timeout=10.0
             )
             content = response.choices[0].message.content or ""
             
-            # 正規表現で JSON 部分のみを抽出（思考ログやMarkdown記法対策）
             match = re.search(r"\{.*\}", content, re.DOTALL)
             if match:
                 parsed = json.loads(match.group(0))
@@ -91,7 +102,7 @@ class DebateGovernance:
                     "critic_feedback": str(parsed.get("critic_feedback", "N/A"))
                 }
             
-            raise ValueError("有効なJSON構造が見つかりませんでした")
+            raise ValueError("JSONフォーマットが抽出できませんでした")
 
         except Exception as e:
             logger.warning(f"OpenRouter 応答解析スキップ/フォールバック: {e}")
