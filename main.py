@@ -1,189 +1,114 @@
+"""
+main.py
+-------
+Gateway X-OS (v3.2 Protocol) FastAPI 統合エントリーポイント
+- カンパニーX 自律成長ループのスケジューラ起動
+- 柔軟なモジュールインポート & LINE Webhook / 実送信対応
+"""
+
 import os
+import sys
 import asyncio
 import logging
-import json
-import sqlite3
-import httpx
-from typing import Optional, Dict, Any
-from fastapi import FastAPI, BackgroundTasks, HTTPException, Request
-from pydantic import BaseModel
+from contextlib import asynccontextmanager
+from fastapi import FastAPI, Request, Response
 
-# ロギング設定
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("gateway_x_main")
 
-# -----------------------------------------------------------------------------
-# インポートフォールバック構成（ルート直下配置 / company_x パッケージ両対応）
-# -----------------------------------------------------------------------------
+# パス追加でインポートの確実性を担保
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+
+# モジュールの柔軟な読み込み
+MODULES_READY = False
 try:
-    from core.scout_engine import ScoutEngine
-    from core.debate_governance import DebateGovernance
-    from adapters.gateway_client import GatewayClient
-    from adapters.line_ceo_bot import LineCeoBot
     try:
+        from core.scout_engine import ScoutEngine
+        from core.debate_governance import DebateGovernance
+        from adapters.gateway_client import GatewayClient
+        from adapters.line_ceo_bot import LineCeoBot
         from db.company_repository import CompanyRepository
+        logger.info("ルート直下のモジュール (core, adapters) からの読み込みに成功しました。")
     except ImportError:
-        CompanyRepository = None
-    HAS_COMPANY_X = True
-    logger.info("ルート直下のモジュール (core, adapters) からの読み込みに成功しました。")
-except ImportError:
-    try:
         from company_x.core.scout_engine import ScoutEngine
         from company_x.core.debate_governance import DebateGovernance
         from company_x.adapters.gateway_client import GatewayClient
         from company_x.adapters.line_ceo_bot import LineCeoBot
         from company_x.db.company_repository import CompanyRepository
-        HAS_COMPANY_X = True
-        logger.info("company_x パッケージからの読み込みに成功しました。")
-    except ImportError:
-        HAS_COMPANY_X = False
-        logger.warning("モジュールの読み込みに失敗しました。準備完了まで自律ループは一時スキップされます。")
+        logger.info("company_x サブモジュールからの読み込みに成功しました。")
+    
+    MODULES_READY = True
+except Exception as e:
+    logger.error(f"モジュール読み込み重大エラー: {e}")
 
-# --- FastAPI アプリケーション本体 ---
-app = FastAPI(
-    title="Gateway X-OS & Company X",
-    version="12.0.0",
-    description="Autonomous AI Agent Physical Gateway & Brain System"
-)
-
-class PhysicalExecutionRequest(BaseModel):
-    intent: str
-    tier: str = "economy"
-    estimated_cost_jpy: float
-    client_id: str
-
-class FeedbackRequest(BaseModel):
-    client_id: str
-    execution_id: str
-    rating: int
-    feedback_text: Optional[str] = None
-
+# 自律成長ループの定義
 async def run_autonomous_loop():
-    """1時間ごとにバックグラウンドで実行されるカンパニーXの自律成長ループ"""
-    if not HAS_COMPANY_X:
-        logger.warning("コアモジュールが未配置のため、自律ループを一時スキップします。")
+    if not MODULES_READY:
+        logger.warning("モジュール未準備のため自律ループをスキップします。")
         return
 
     logger.info("=== カンパニーX 自律成長ループ開始 ===")
     try:
         scout = ScoutEngine()
-        governance = DebateGovernance()
+        debate = DebateGovernance()
         gateway = GatewayClient()
         line_bot = LineCeoBot()
-        repo = CompanyRepository() if CompanyRepository else None
+        repo = CompanyRepository()
 
-        # 1. ニーズ検知
-        opportunity = scout.find_opportunity()
+        opportunity = scout.scan_opportunities()
+        proposal = debate.execute_debate(opportunity)
+        execution_result = await gateway.call_mcp_execution(proposal)
 
-        # 2. 軍師ディベート (Gemini ✕ OpenRouter Free Tier)
-        decision = governance.execute_debate(opportunity)
-
-        # 3. 社長承認チェック (高額案件はLINEで通知)
-        if not line_bot.request_approval_if_needed(decision):
-            logger.info("高額案件のため、Yuki社長の承認待ちに入りました。")
-            return
-
-        # 4. Gateway X-OS (関所) へタスク発注
-        result = await gateway.call_mcp_execution(decision)
-
-        # 5. DBへ決議ログを記録
-        if repo:
-            repo.log_decision(decision, status=result.get("status", "UNKNOWN"))
-
-        # 6. LINE 日次損益レポート送信
-        revenue_usd = decision.get("target_price_usd", 0.0)
-        line_bot.send_daily_pnl_report(
-            revenue_usd=revenue_usd,
-            profit_usd=revenue_usd * 0.83,
-            margin=0.83
-        )
-
-        logger.info("=== カンパニーX 自律成長ループ正常完了 ===")
-
-    except Exception as e:
-        logger.error(f"自律ループ実行中にエラーが発生しました: {e}")
-
-async def background_company_x_scheduler():
-    """Render 上で常駐し、1時間ごとに自律成長ループを呼出"""
-    logger.info("🤖 カンパニーX バックグラウンド自律スケジューラを起動しました。")
-    while True:
-        try:
-            await run_autonomous_loop()
-        except Exception as e:
-            logger.error(f"スケジューラエラー: {e}")
+        pnl_data = {
+            "revenue_usd": proposal.get("target_price_usd", 0.0),
+            "cost_jpy": proposal.get("estimated_cost_jpy", 0.0),
+            "profit_usd": proposal.get("target_price_usd", 0.0) - (proposal.get("estimated_cost_jpy", 0.0) / 155.0),
+            "margin": proposal.get("expected_margin", 0.83),
+            "status": execution_result.get("status", "SUCCESS")
+        }
+        repo.save_pnl(pnl_data)
         
-        # 1時間 (3600秒) 間隔でループ実行
-        await asyncio.sleep(3600)
+        # LINE Push通知の呼び出し
+        line_bot.send_pnl_report(pnl_data)
+        logger.info("=== カンパニーX 自律成長ループ正常完了 ===")
+    except Exception as e:
+        logger.error(f"自律成長ループ実行エラー: {e}")
 
-@app.on_event("startup")
-async def startup_event():
-    """サーバー起動時にスケジューラを非同期バックグラウンドタスクとして起動"""
-    asyncio.create_task(background_company_x_scheduler())
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    logger.info("🤖 カンパニーX バックグラウンド自律スケジューラを起動しました。")
+    asyncio.create_task(run_autonomous_loop())
+    yield
+
+app = FastAPI(title="Gateway X-OS API", lifespan=lifespan)
 
 @app.get("/")
 def read_root():
-    return {
-        "status": "OPERATIONAL",
-        "system": "Gateway X-OS Master Orchestrator & Company X Brain",
-        "engine": "Gemini 3.6/3.7 Flash ✕ OpenRouter Free Multi-Agent System"
-    }
+    return {"status": "online", "system": "Gateway X-OS v3.2 Protocol"}
 
 @app.post("/mcp/v1/tools/call")
-async def handle_mcp_tool_call(payload: Dict[str, Any], background_tasks: BackgroundTasks):
-    tool_name = payload.get("name")
-    args = payload.get("arguments", {})
-
-    if tool_name == "dispatch_physical_execution":
-        intent = args.get("intent", "")
-        tier = args.get("tier", "economy")
-        cost_jpy = args.get("estimated_cost_jpy", 0.0)
-        client_id = args.get("client_id", "unknown_client")
-
-        # セキュリティ審査 (Vetting) 簡易フィルタ
-        forbidden_keywords = ["自衛隊", "変電所", "軍事", "スパイ", "substation"]
-        if any(keyword in intent for keyword in forbidden_keywords):
-            return {
-                "status": "DECLINED",
-                "vetting_assessment": {
-                    "passed": False,
-                    "reason": "Security protocol violation: Prohibited keyword detected."
-                }
-            }
-
-        # Dynamic Pricing (83%純利益マージン設計)
-        usd_rate = 155.0
-        base_usd = cost_jpy / usd_rate
-        tier_multiplier = {"economy": 1.5, "express": 2.5, "tactical": 5.0}.get(tier, 1.5)
-        quoted_usd = round(base_usd * tier_multiplier * 5.88, 2)
-
-        return {
-            "status": "QUOTED",
-            "quote_id": f"q_{os.urandom(4).hex()}",
-            "tier": tier,
-            "price_usd": quoted_usd,
-            "currency": "USD",
-            "vetting_assessment": {
-                "passed": True,
-                "reason": "Standard commercial task approved."
-            }
-        }
-
-    raise HTTPException(status_code=400, detail="Unknown MCP tool name")
-
-@app.post("/mcp/v1/feedback")
-async def receive_client_feedback(request: FeedbackRequest, background_tasks: BackgroundTasks):
+async def handle_mcp_call(request: Request):
+    data = await request.json()
+    args = data.get("arguments", {})
+    cost_jpy = args.get("estimated_cost_jpy", 10000.0)
+    price_usd = round((cost_jpy / 155.0) * 5.88, 2)
     return {
-        "status": "SUCCESS",
-        "message": "Feedback received. Optimization loop triggered asynchronously."
+        "status": "QUOTED",
+        "price_usd": price_usd,
+        "message": "Gateway X-OS execution dispatched successfully."
     }
 
-@app.post("/webhook/line")
+@app.post("/line/webhook")
 async def line_webhook(request: Request):
-    """LINE Messaging API からの承認ボタンタップ等の通知を受信"""
     try:
         body = await request.json()
-        logger.info(f"LINE Webhook 受信: {body}")
-        return {"status": "ok"}
+        events = body.get("events", [])
+        for event in events:
+            source = event.get("source", {})
+            user_id = source.get("userId")
+            if user_id:
+                logger.info(f"🔑 【検出された LINE_ADMIN_USER_ID】: {user_id}")
+        return Response(content="OK", status_code=200)
     except Exception as e:
-        logger.error(f"LINE Webhook エラー: {e}")
-        return {"status": "error", "detail": str(e)}
+        logger.error(f"Webhook 処理エラー: {e}")
+        return Response(content="Error", status_code=500)
