@@ -9,7 +9,7 @@ LINE Messaging API 連携アダプター
 import os
 import logging
 from typing import Dict, Any
-import requests
+import httpx
 
 logger = logging.getLogger("company_x.line_bot")
 
@@ -54,7 +54,10 @@ class LineCeoBot:
         }
 
         try:
-            response = requests.post(url, json=payload, headers=headers, timeout=10.0)
+            # httpx を使用して同期送信（タイムアウト10秒）
+            with httpx.Client(timeout=10.0) as client:
+                response = client.post(url, json=payload, headers=headers)
+                
             if response.status_code == 200:
                 logger.info("✅ LINE Push 通知の実送信に成功しました！")
                 return True
