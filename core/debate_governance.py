@@ -1,3 +1,9 @@
+"""
+core/debate_governance.py
+-------------------------
+Gemini (主将) x OpenRouter Free Tier (軍師) 2ラウンド議論ガバナンス
+"""
+
 import os
 import json
 import logging
@@ -15,13 +21,13 @@ class DebateGovernance:
             base_url="https://openrouter.ai/api/v1",
             api_key=openrouter_api_key or os.getenv("OPENROUTER_API_KEY", "dummy_key")
         )
-        self.critic_model = "deepseek/deepseek-r1:free"  # 無料モデル指定
+        self.critic_model = "deepseek/deepseek-r1:free"
 
     def execute_debate(self, market_opportunity: Dict[str, Any]) -> Dict[str, Any]:
         task_name = market_opportunity.get("task_name", "Unknown Task")
         logger.info(f"--- 意思決定ディベート開始: {task_name} ---")
 
-        # R1: 主将提案 ➔ 軍師批判
+        # R1
         proposal_r1 = self._generate_gemini_proposal(market_opportunity, round_num=1)
         critique_r1 = self._call_openrouter_critic(proposal_r1, round_num=1)
 
@@ -29,7 +35,7 @@ class DebateGovernance:
             logger.info("Round 1 で即時承認")
             return self._finalize_decision(proposal_r1, status="APPROVED_R1")
 
-        # R2: 主将修正 ➔ 軍師再批判
+        # R2
         proposal_r2 = self._refine_proposal(proposal_r1, critique_r1, round_num=2)
         critique_r2 = self._call_openrouter_critic(proposal_r2, round_num=2)
 
@@ -37,7 +43,7 @@ class DebateGovernance:
             logger.info("Round 2 で修正案承認")
             return self._finalize_decision(proposal_r2, status="APPROVED_R2")
 
-        # サーキットブレーカー (2R未収束時、損失最小案を強制採用)
+        # サーキットブレーカー
         logger.warning("サーキットブレーカー発動 (小口・安全側案を強制採択)")
         safe_proposal = self._apply_circuit_breaker(proposal_r1, proposal_r2)
         return self._finalize_decision(safe_proposal, status="CIRCUIT_BREAKER_APPROVED")
@@ -69,8 +75,8 @@ class DebateGovernance:
             content = response.choices[0].message.content
             parsed = json.loads(content[content.find("{"):content.rfind("}")+1])
             return {"round": round_num, "is_approved": parsed.get("is_approved", False)}
-        except Exception:
-            # フォールバック (ルールベース評価)
+        except Exception as e:
+            logger.warning(f"OpenRouter 呼び出しフォールバック ({e})")
             is_ok = proposal.get("expected_margin", 0) >= self.MIN_MARGIN_THRESHOLD
             return {"round": round_num, "is_approved": is_ok}
 
