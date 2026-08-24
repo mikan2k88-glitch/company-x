@@ -23,8 +23,8 @@ class DebateGovernance:
             base_url="https://openrouter.ai/api/v1",
             api_key=openrouter_api_key or os.getenv("OPENROUTER_API_KEY", "dummy_key")
         )
-        # 現在利用可能な完全無料枠アクティブモデルに変更
-        self.critic_model = "google/gemini-2.0-flash-exp:free"
+        # 確実に稼働する OpenRouter 無料枠スラグに更新
+        self.critic_model = "meta-llama/llama-3.3-70b-instruct:free"
 
     def execute_debate(self, market_opportunity: Dict[str, Any]) -> Dict[str, Any]:
         task_name = market_opportunity.get("task_name", "Unknown Task")
