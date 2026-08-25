@@ -45,9 +45,9 @@ class ScoutEngine:
             }
         ]
 
-    def _fetch_latest_tech_keywords((self) -> str:
+    def _fetch_latest_tech_keywords(self) -> str:
         """
-        Qiita Trend や はてなブックマーク（IT）からリアルタイムキーワードを取得する（安全なフォールバック付き）
+        Qiita Tag API等からリアルタイムキーワードを取得する（安全なフォールバック付き）
         """
         try:
             url = "https://qiita.com/api/v2/tags?page=1&per_page=5&sort=count"
