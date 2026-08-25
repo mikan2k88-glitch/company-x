@@ -2,17 +2,18 @@
 main.py
 -------
 Gateway X-OS (v3.2 Protocol) FastAPI 統合エントリーポイント
-- カンパニーX 自律成長ループのスケジューラ起動
-- LINE 1タップ承認 Postback イベントハンドリング
+- 毎朝 9:00 (JST) の Cron 自動実行スケジューラ組み込み
+- LINE Webhook 受信・1タップ承認 (Postback) 処理
 """
 
 import os
 import sys
 import asyncio
 import logging
-from urllib.parse import parse_qs
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, Response
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("gateway_x_main")
@@ -35,6 +36,9 @@ except Exception as e:
 
 
 async def run_autonomous_loop():
+    """
+    自律成長ループの実行ロジック
+    """
     if not MODULES_READY:
         logger.warning("モジュール未準備のため自律ループをスキップします。")
         return
@@ -47,33 +51,28 @@ async def run_autonomous_loop():
         line_bot = LineCeoBot()
         repo = CompanyRepository()
 
-        # 市場機会の検知 & ディベート
+        # 1. 案件スカウト
         opportunity = scout.scout_market()
+
+        # 2. 軍師AIディベート
         proposal = debate.execute_debate(opportunity)
 
-        cost_jpy = proposal.get("estimated_cost_jpy", 0.0)
-
-        # 5万円以上の場合は CEO の LINE 1タップ承認リクエストへ分岐
-        if cost_jpy >= 50000.0:
-            logger.info(f"高額案件 (¥{cost_jpy:,.0f}) のため CEO LINE 承認リクエストを送信します。")
-            line_bot.send_approval_request(proposal)
-            return
-
-        # 通常案件は即時自動発注
+        # 3. Gateway X-OS 見積もり/発注
         execution_result = await gateway.call_mcp_execution(proposal)
 
         pnl_data = {
             "revenue_usd": proposal.get("target_price_usd", 0.0),
-            "cost_jpy": cost_jpy,
-            "profit_usd": proposal.get("target_price_usd", 0.0) - (cost_jpy / 155.0),
+            "cost_jpy": proposal.get("estimated_cost_jpy", 0.0),
+            "profit_usd": proposal.get("target_price_usd", 0.0) - (proposal.get("estimated_cost_jpy", 0.0) / 155.0),
             "margin": proposal.get("expected_margin", 0.83),
             "status": execution_result.get("status", "SUCCESS")
         }
 
+        # 4. DBへの記録保存
         repo.save_pnl_record(pnl_data)
-        line_bot.send_pnl_report(pnl_data)
 
-        # 動作確認・体験用に 承認カードのデモ送信も平行実施
+        # 5. LINE通知（P&L レポート & 1タップ承認カード送信）
+        line_bot.send_pnl_report(pnl_data)
         line_bot.send_approval_request(proposal)
 
         logger.info("=== カンパニーX 自律成長ループ正常完了 ===")
@@ -81,11 +80,30 @@ async def run_autonomous_loop():
         logger.error(f"自律成長ループ実行エラー: {e}")
 
 
+# スケジューラの初期化
+scheduler = AsyncIOScheduler(timezone="Asia/Tokyo")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("🤖 カンパニーX バックグラウンド自律スケジューラを起動しました。")
+    logger.info("🤖 カンパニーX スケジューラーを起動中...")
+
+    # 1. サーバー起動時にまず1回即時実行（デバッグ & 稼働確認用）
     asyncio.create_task(run_autonomous_loop())
+
+    # 2. 毎朝 09:00 (JST) に自動実行する Cron ジョブを追加
+    scheduler.add_job(
+        run_autonomous_loop,
+        CronTrigger(hour=9, minute=0, timezone="Asia/Tokyo"),
+        id="daily_autonomous_loop",
+        replace_existing=True
+    )
+    scheduler.start()
+    logger.info("⏰ 毎朝 09:00 (JST) の定時実行ジョブをセットしました。")
+
     yield
+
+    scheduler.shutdown()
 
 
 app = FastAPI(title="Gateway X-OS API", lifespan=lifespan)
@@ -93,7 +111,7 @@ app = FastAPI(title="Gateway X-OS API", lifespan=lifespan)
 
 @app.get("/")
 def read_root():
-    return {"status": "online", "system": "Gateway X-OS v3.2 Protocol"}
+    return {"status": "online", "system": "Gateway X-OS v3.2 Protocol", "cron": "Active at 09:00 JST"}
 
 
 @app.post("/mcp/v1/tools/call")
@@ -111,63 +129,23 @@ async def handle_mcp_call(request: Request):
 
 @app.post("/line/webhook")
 async def line_webhook(request: Request):
-    """
-    LINE Webhook 受信: Postback (1タップ承認) イベントの非同期処理
-    """
     try:
         body = await request.json()
         events = body.get("events", [])
-        line_bot = LineCeoBot()
-        gateway = GatewayClient()
-        repo = CompanyRepository()
+        line_bot = LineCeoBot() if MODULES_READY else None
 
         for event in events:
-            event_type = event.get("type")
+            # 1. ユーザーメッセージ等の送信時 (User ID 検出)
             source = event.get("source", {})
             user_id = source.get("userId")
-
             if user_id:
                 logger.info(f"🔑 【検出された LINE_ADMIN_USER_ID】: {user_id}")
 
-            # 1タップ承認 (Postback) イベントハンドリング
-            if event_type == "postback":
+            # 2. LINE 1タップ承認（Postbackイベント）の受信処理
+            if event.get("type") == "postback" and line_bot:
                 postback_data = event.get("postback", {}).get("data", "")
-                params = {k: v[0] for k, v in parse_qs(postback_data).items()}
-                action = params.get("action")
-                intent = params.get("intent", "案件")
-
-                if action == "approve":
-                    cost_jpy = float(params.get("cost", 0.0))
-                    price_usd = float(params.get("price", 0.0))
-
-                    proposal = {
-                        "intent": intent,
-                        "estimated_cost_jpy": cost_jpy,
-                        "target_price_usd": price_usd,
-                        "expected_margin": 0.83
-                    }
-                    exec_result = await gateway.call_mcp_execution(proposal)
-
-                    pnl_data = {
-                        "revenue_usd": price_usd,
-                        "cost_jpy": cost_jpy,
-                        "profit_usd": price_usd - (cost_jpy / 155.0),
-                        "margin": 0.83,
-                        "status": exec_result.get("status", "CEO_APPROVED")
-                    }
-                    repo.save_pnl_record(pnl_data)
-
-                    line_bot.send_simple_message(
-                        f"🎉 CEO承認を受理しました！\n"
-                        f"案件『{intent}』を Gateway X-OS へ発注しました。\n"
-                        f"売上確定: ${price_usd:,.2f}"
-                    )
-
-                elif action == "redebate":
-                    line_bot.send_simple_message(f"🔄 CEOより軍師AIへ再検討指示を伝達しました: 『{intent}』")
-
-                elif action == "reject":
-                    line_bot.send_simple_message(f"❌ 案件『{intent}』はCEO判断により却下されました。")
+                reply_token = event.get("replyToken")
+                line_bot.handle_postback(postback_data, reply_token)
 
         return Response(content="OK", status_code=200)
     except Exception as e:
