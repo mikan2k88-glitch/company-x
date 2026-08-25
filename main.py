@@ -136,6 +136,33 @@ async def get_dashboard():
     )
 
 
+@app.get("/api/stats")
+async def get_api_stats():
+    """DBの実績データを集計してKPIカード用に返却"""
+    if MODULES_READY:
+        repo = CompanyRepository()
+        return repo.get_summary_stats()
+    return {"total_tasks": 0, "total_revenue_usd": 0.0, "total_profit_usd": 0.0, "avg_margin": 0.83}
+
+
+@app.get("/api/logs")
+async def get_api_logs():
+    """DBに保存された直近の案件ディベート＆実行ログを返却"""
+    if MODULES_READY:
+        repo = CompanyRepository()
+        return repo.get_recent_records(limit=15)
+    return []
+
+
+@app.post("/api/run-loop")
+async def trigger_run_loop():
+    """ダッシュボードからの即時手動実行リクエスト」"""
+    if MODULES_READY:
+        asyncio.create_task(run_autonomous_loop())
+        return {"status": "SUCCESS", "message": "自律成長ループを即時起動しました。"}
+    return {"status": "ERROR", "message": "モジュール未準備のため実行できません。"}
+
+
 @app.post("/mcp/v1/tools/call")
 async def handle_mcp_call(request: Request):
     data = await request.json()
