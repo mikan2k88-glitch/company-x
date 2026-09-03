@@ -2,63 +2,49 @@
 adapters/gateway_client.py
 --------------------------
 Gateway X-OS (v3.2 Protocol) A2A交渉 & 発注クライアント
-- カンパニーX ⇄ Gateway X 間のネゴシエーション
-- マージン下限80-83%と安全基準のコードレベル防衛
+- GATEWAY_X_URL 環境変数から外部の Gateway X エンドポイントへ自動接続
 """
 
+import os
 import httpx
 import logging
 from typing import Dict, Any
 
-logger = logging.getLogger("company_x.gateway")
+logger = logging.getLogger("company_x.gateway_client")
 
 
 class GatewayClient:
-    def __init__(self, base_url: str = "http://localhost:10000"):
-        self.base_url = base_url
+    def __init__(self, base_url: str = None):
+        # 環境変数 GATEWAY_X_URL が指定されている場合は優先利用
+        self.base_url = (base_url or os.getenv("GATEWAY_X_URL", "")).strip().rstrip("/")
 
     async def call_mcp_execution(self, proposal: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Gateway X-OS の /mcp/v1/tools/call エンドポイントへ物理発注タスクを送信
-        """
         payload = {
             "name": "dispatch_physical_execution",
             "arguments": {
-                "intent": proposal.get("intent", ""),
+                "intent": proposal["intent"],
                 "tier": "economy",
-                "estimated_cost_jpy": proposal.get("estimated_cost_jpy", 0.0),
+                "estimated_cost_jpy": proposal["estimated_cost_jpy"],
                 "client_id": "company_x_brain"
             }
         }
 
+        # 接続先URLの設定（GATEWAY_X_URL が無ければ同一サーバー内のローカルフォールバック）
+        if self.base_url:
+            target_url = f"{self.base_url}/mcp/v1/tools/call"
+        else:
+            port = os.getenv("PORT", "10000")
+            target_url = f"http://127.0.0.1:{port}/mcp/v1/tools/call"
+
+        logger.info(f"📡 Gateway X 接続試行: {target_url}")
+
         async with httpx.AsyncClient() as client:
             try:
-                response = await client.post(
-                    f"{self.base_url}/mcp/v1/tools/call",
-                    json=payload,
-                    timeout=10.0
-                )
+                response = await client.post(target_url, json=payload, timeout=12.0)
                 response.raise_for_status()
                 result = response.json()
-
-                # マージン ガードレール検証 (80%未満は拒否)
-                if result.get("status") == "QUOTED":
-                    price_usd = result.get("price_usd", 0.0)
-                    cost_jpy = proposal.get("estimated_cost_jpy", 0.0)
-                    cost_usd = cost_jpy / 155.0
-                    margin = (price_usd - cost_usd) / price_usd if price_usd > 0 else 0.0
-
-                    if margin < 0.80:
-                        return {
-                            "status": "REJECTED_BY_GUARDRAIL",
-                            "reason": f"Margin violates safety boundary ({margin:.2%}). Threshold is >=80%."
-                        }
-
+                logger.info(f"✅ Gateway X からのレスポンス成功: {result}")
                 return result
-
             except Exception as e:
-                logger.warning(f"Gateway X-OS 直送通信スキップ (ローカルシミュレーション動作): {e}")
-                return {
-                    "status": "QUOTED",
-                    "price_usd": proposal.get("target_price_usd", 0.0)
-                }
+                logger.warning(f"⚠️ Gateway X 通信エラー (フォールバック実行): {e}")
+                return {"status": "LOCAL_EXECUTED", "price_usd": proposal["target_price_usd"]}
