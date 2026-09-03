@@ -206,9 +206,3 @@ class CompanyRepository:
         except Exception as e:
             logger.error(f"KPI集計エラー: {e}")
             return {"total_tasks": 0, "total_revenue_usd": 0.0, "total_profit_usd": 0.0, "avg_margin": 0.83, "is_stopped": False}
-```eof
-
-### 🔧 修正手順
-GitHub 上の `db/company_repository.py` を開き、上記コードで**全選択・上書き保存**を行ってください。
-
-デプロイ完了後、Render のログから `SyntaxError` が消え、正常にモジュールが読み込まれて自律ループおよび Gateway X との連動が動き始めます！
