@@ -3,7 +3,7 @@ core/debate_governance.py
 -------------------------
 安全最優先型ガバナンスエンジン
 - トリプル・セーフティガードレール（83%粗利防衛 / 5万円ハードキャップ / 高リスク自動拒否）
-- Gemini (主将) x DeepSeek-R1 (軍師) による2ラウンド監査
+- Gemini (主将) x 軍師AI (OpenRouter) による2ラウンド監査
 """
 
 import os
@@ -16,7 +16,6 @@ logger = logging.getLogger("company_x.debate")
 
 
 class DebateGovernance:
-    # ガバナンス絶対安全閾値
     MIN_MARGIN_THRESHOLD = 0.83       # 83% マージン絶対防衛
     MAX_SINGLE_COST_JPY = 50000.0     # 1タスク最大出費の上限ハードキャップ（¥50,000）
     MAX_ALLOWED_RISK_SCORE = 0.3      # 許容リスクスコアの上限
@@ -26,21 +25,19 @@ class DebateGovernance:
             base_url="https://openrouter.ai/api/v1",
             api_key=openrouter_api_key or os.getenv("OPENROUTER_API_KEY", "dummy_key")
         )
-        self.critic_model = "deepseek/deepseek-r1:free"
+        # 利用可能な高速かつ安定したモデルへ更新
+        self.critic_model = "google/gemini-2.0-flash-lite-001"
 
     def execute_debate(self, market_opportunity: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        市場機会に対するディベート及びトリプル・セーフティチェックを実行
-        """
         task_name = market_opportunity.get("task_name", "Unknown Task")
         logger.info(f"--- 意思決定ディベート開始: {task_name} ---")
 
-        # 0. 事前セーフティチェック（危険判定）
+        # 0. 事前セーフティチェック（予算超過時の自動ダウンスケール）
         initial_cost = market_opportunity.get("estimated_cost_jpy", 0.0)
         if initial_cost > self.MAX_SINGLE_COST_JPY:
             logger.warning(
                 f"⚠️ [安全装置発動] 見積予算 ¥{initial_cost:,.0f} が安全上限（¥{self.MAX_SINGLE_COST_JPY:,.0f}）を超過。"
-                "自動的に安全枠（¥{self.MAX_SINGLE_COST_JPY:,.0f}）へダウンスケールします。"
+                f"自動的に安全枠（¥{self.MAX_SINGLE_COST_JPY:,.0f}）へダウンスケールします。"
             )
             market_opportunity["estimated_cost_jpy"] = self.MAX_SINGLE_COST_JPY
 
@@ -92,8 +89,7 @@ class DebateGovernance:
             )
             content = response.choices[0].message.content
             parsed = json.loads(content[content.find("{"):content.rfind("}")+1])
-            
-            # ハードルール強制適用（AIの判定に関わらずプログラム側でもガード）
+
             is_safe = (
                 parsed.get("is_approved", False) and
                 proposal.get("expected_margin", 0) >= self.MIN_MARGIN_THRESHOLD and
@@ -111,7 +107,6 @@ class DebateGovernance:
     def _refine_proposal(self, old_proposal: Dict[str, Any], critique: Dict[str, Any], round_num: int) -> Dict[str, Any]:
         refined = old_proposal.copy()
         refined["round"] = round_num
-        # 売上目標のみ上方微修正し利幅をさらに拡大
         refined["target_price_usd"] = round(refined["target_price_usd"] * 1.05, 2)
         return refined
 
