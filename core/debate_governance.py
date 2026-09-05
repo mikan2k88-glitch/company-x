@@ -1,4 +1,3 @@
-
 """
 core/debate_governance.py
 -------------------------
@@ -119,5 +118,3 @@ class DebateGovernance:
     def _finalize_decision(self, proposal: Dict[str, Any], status: str) -> Dict[str, Any]:
         proposal["decision_status"] = status
         return proposal
-
-上記2ファイルを GitHub へ反映（コミット）していただければ、スリープ中の Gateway X に対しても通信完了までしっかり待機し、Gateway X への直接発注も正常に成功するようになります！
