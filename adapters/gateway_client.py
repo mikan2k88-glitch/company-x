@@ -3,6 +3,7 @@ adapters/gateway_client.py
 --------------------------
 Gateway X-OS (v3.2 Protocol) A2A交渉 & 発注クライアント
 - 失敗時の「成功偽装」を排除し、明確に FAILED ステータスを返却します。
+- Render無料枠のスリープ復帰(約30秒)を待つため timeout を45秒に拡張。
 """
 
 import os
@@ -36,9 +37,10 @@ class GatewayClient:
 
         logger.info(f"📡 Gateway X 接続試行: {target_url}")
 
+        # Render無料枠のスリープ解除を待てるよう timeout を 45.0 秒に拡張
         async with httpx.AsyncClient() as client:
             try:
-                response = await client.post(target_url, json=payload, timeout=12.0)
+                response = await client.post(target_url, json=payload, timeout=45.0)
                 response.raise_for_status()
                 result = response.json()
                 logger.info(f"✅ Gateway X からのレスポンス成功: {result}")
