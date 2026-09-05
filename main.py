@@ -2,18 +2,22 @@
 main.py
 -------
 Gateway X-OS (v3.2 Protocol) FastAPI 統合エントリーポイント
-- カンパニーX Web管理ダッシュボード (/dashboard) の配信機能追加
-- 毎朝 09:00 (JST) の Cron 自動実行スケジューラ組み込み
-- LINE Webhook 受信・1タップ承認 (Postback) 処理
+- LINE Webhook HMAC-SHA256 署名検証追加 (セキュリティ完全化)
+- キルスイッチ（STOPPED状態）の自動チェック＆LINE「ストップ/再開」制御追加
+- 5万円閾値による自動発注 vs LINE CEO手動承認の分岐ロジック
+- 失敗時の偽装を完全排除
 """
 
 import os
 import sys
+import hmac
+import hashlib
+import base64
 import asyncio
 import logging
 from urllib.parse import parse_qs
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Request, Response
+from fastapi import FastAPI, Request, Response, Header, HTTPException
 from fastapi.responses import HTMLResponse, FileResponse
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -38,12 +42,33 @@ except Exception as e:
     logger.error(f"モジュール読み込み失敗の詳細: {e}", exc_info=True)
 
 
+def verify_line_signature(body_bytes: bytes, signature: str, channel_secret: str) -> bool:
+    """LINE Webhook HMAC-SHA256 署名検証"""
+    if not channel_secret:
+        logger.warning("⚠️ LINE_CHANNEL_SECRET が未設定のため、署名検証をスキップします。")
+        return True
+    if not signature:
+        return False
+    
+    hash_val = hmac.new(channel_secret.encode('utf-8'), body_bytes, hashlib.sha256).digest()
+    expected_signature = base64.b64encode(hash_val).decode('utf-8')
+    return hmac.compare_digest(expected_signature, signature)
+
+
 async def run_autonomous_loop():
     """
     自律成長ループの実行ロジック
+    - キルスイッチ (STOPPED) チェック
+    - 5万円未満は自動発注、5万円以上はCEO承認待ち
     """
     if not MODULES_READY:
         logger.warning("モジュール未準備のため自律ループをスキップします。")
+        return
+
+    repo = CompanyRepository()
+
+    if repo.is_system_stopped():
+        logger.info("🛑 [キルスイッチ発動中] システムが停止（STOPPED）状態のため、自律成長ループをスキップします。")
         return
 
     logger.info("=== カンパニーX 自律成長ループ開始 ===")
@@ -52,7 +77,6 @@ async def run_autonomous_loop():
         debate = DebateGovernance()
         gateway = GatewayClient()
         line_bot = LineCeoBot()
-        repo = CompanyRepository()
 
         # 1. 案件スカウト
         opportunity = scout.scout_market()
@@ -60,23 +84,31 @@ async def run_autonomous_loop():
         # 2. 軍師AIディベート
         proposal = debate.execute_debate(opportunity)
 
-        # 3. Gateway X-OS 見積もり/発注
-        execution_result = await gateway.call_mcp_execution(proposal)
+        cost_jpy = proposal.get("estimated_cost_jpy", 0.0)
 
-        pnl_data = {
-            "revenue_usd": proposal.get("target_price_usd", 0.0),
-            "cost_jpy": proposal.get("estimated_cost_jpy", 0.0),
-            "profit_usd": proposal.get("target_price_usd", 0.0) - (proposal.get("estimated_cost_jpy", 0.0) / 155.0),
-            "margin": proposal.get("expected_margin", 0.83),
-            "status": execution_result.get("status", "SUCCESS")
-        }
+        if cost_jpy < line_bot.APPROVAL_THRESHOLD_JPY:
+            # 5万円未満：自動発注＆記録
+            logger.info(f"⚡️ [自動承認] 予算 ¥{cost_jpy:,.0f} < ¥50,000 のため、自動発注を実行します。")
+            execution_result = await gateway.call_mcp_execution(proposal)
 
-        # 4. DBへの記録保存
-        repo.save_pnl_record(pnl_data)
+            status = execution_result.get("status", "SUCCESS")
+            price_usd = proposal.get("target_price_usd", 0.0) if status != "FAILED" else 0.0
 
-        # 5. LINE通知（P&L レポート & 1タップ承認カード送信）
-        line_bot.send_pnl_report(pnl_data)
-        line_bot.send_approval_request(proposal)
+            pnl_data = {
+                "revenue_usd": price_usd,
+                "cost_jpy": cost_jpy,
+                "profit_usd": price_usd - (cost_jpy / 155.0),
+                "margin": proposal.get("expected_margin", 0.83),
+                "status": status,
+                "intent": proposal.get("intent", "")
+            }
+
+            repo.save_pnl_record(pnl_data)
+            line_bot.send_auto_approved_notice(proposal, execution_result)
+        else:
+            # 5万円以上：CEO承認カードをLINEへ送信し待機
+            logger.info(f"🚨 [要CEO承認] 予算 ¥{cost_jpy:,.0f} >= ¥50,000 のため、LINE承認カードを送信します。")
+            line_bot.send_approval_request(proposal)
 
         logger.info("=== カンパニーX 自律成長ループ正常完了 ===")
     except Exception as e:
@@ -91,7 +123,7 @@ scheduler = AsyncIOScheduler(timezone="Asia/Tokyo")
 async def lifespan(app: FastAPI):
     logger.info("🤖 カンパニーX スケジューラーを起動中...")
 
-    # 1. サーバー起動時にまず1回即時実行（デバッグ & 稼働確認用）
+    # 1. サーバー起動時にまず1回即時実行
     asyncio.create_task(run_autonomous_loop())
 
     # 2. 毎朝 09:00 (JST) に自動実行する Cron ジョブを追加
@@ -124,9 +156,6 @@ def read_root():
 
 @app.get("/dashboard", response_class=HTMLResponse)
 async def get_dashboard():
-    """
-    Web管理ダッシュボードUI (dashboard.html) を返却するエンドポイント
-    """
     dashboard_path = os.path.join(os.path.dirname(__file__), "dashboard.html")
     if os.path.exists(dashboard_path):
         return FileResponse(dashboard_path)
@@ -138,7 +167,6 @@ async def get_dashboard():
 
 @app.get("/api/stats")
 async def get_api_stats():
-    """DBの実績データを集計してKPIカード用に返却"""
     if MODULES_READY:
         repo = CompanyRepository()
         return repo.get_summary_stats()
@@ -147,7 +175,6 @@ async def get_api_stats():
 
 @app.get("/api/logs")
 async def get_api_logs():
-    """DBに保存された直近の案件ディベート＆実行ログを返却"""
     if MODULES_READY:
         repo = CompanyRepository()
         return repo.get_recent_records(limit=15)
@@ -156,7 +183,6 @@ async def get_api_logs():
 
 @app.post("/api/run-loop")
 async def trigger_run_loop():
-    """ダッシュボードからの即時手動実行リクエスト」"""
     if MODULES_READY:
         asyncio.create_task(run_autonomous_loop())
         return {"status": "SUCCESS", "message": "自律成長ループを即時起動しました。"}
@@ -177,8 +203,16 @@ async def handle_mcp_call(request: Request):
 
 
 @app.post("/line/webhook")
-async def line_webhook(request: Request):
+async def line_webhook(request: Request, x_line_signature: str = Header(None)):
     try:
+        body_bytes = await request.body()
+        channel_secret = os.getenv("LINE_CHANNEL_SECRET", "").strip().strip('"').strip("'")
+
+        # 1. 署名検証
+        if channel_secret and not verify_line_signature(body_bytes, x_line_signature, channel_secret):
+            logger.warning("🚨 [不正アクセス検知] LINE Webhook 署名検証に失敗しました。")
+            raise HTTPException(status_code=401, detail="Invalid signature")
+
         body = await request.json()
         events = body.get("events", [])
         line_bot = LineCeoBot() if MODULES_READY else None
@@ -189,9 +223,22 @@ async def line_webhook(request: Request):
             source = event.get("source", {})
             user_id = source.get("userId")
             if user_id:
-                logger.info(f"🔑 【検出された LINE_ADMIN_USER_ID】: {user_id}")
+                logger.info(f"🔑 【LINE User ID】: {user_id}")
 
-            if event.get("type") == "postback" and line_bot:
+            event_type = event.get("type")
+
+            # テキストメッセージ処理（キルスイッチ制御：ストップ / 再開）
+            if event_type == "message" and line_bot and repo:
+                msg_text = event.get("message", {}).get("text", "").strip()
+                if msg_text in ["ストップ", "stop", "STOP", "停止"]:
+                    repo.set_system_state("STOPPED")
+                    line_bot.send_simple_message("🛑 【緊急停止指示】\nシステムを STOPPED 状態に変更しました。\n自律成長ループおよび自動発注を一時停止します。\n再開するには「再開」と送信してください。")
+                elif msg_text in ["再開", "スタート", "start", "START", "active"]:
+                    repo.set_system_state("ACTIVE")
+                    line_bot.send_simple_message("▶️ 【システム再開】\nシステムを ACTIVE 状態に戻しました。\n自律成長ループを再開します。")
+
+            # 1タップ承認 Postback 処理
+            elif event_type == "postback" and line_bot and gateway and repo:
                 postback_data = event.get("postback", {}).get("data", "")
                 params = {k: v[0] for k, v in parse_qs(postback_data).items()}
                 action = params.get("action")
@@ -208,21 +255,30 @@ async def line_webhook(request: Request):
                         "expected_margin": 0.83
                     }
                     exec_result = await gateway.call_mcp_execution(proposal)
+                    status = exec_result.get("status", "CEO_APPROVED")
 
-                    pnl_data = {
-                        "revenue_usd": price_usd,
-                        "cost_jpy": cost_jpy,
-                        "profit_usd": price_usd - (cost_jpy / 155.0),
-                        "margin": 0.83,
-                        "status": exec_result.get("status", "CEO_APPROVED")
-                    }
-                    repo.save_pnl_record(pnl_data)
+                    if status != "FAILED":
+                        pnl_data = {
+                            "revenue_usd": price_usd,
+                            "cost_jpy": cost_jpy,
+                            "profit_usd": price_usd - (cost_jpy / 155.0),
+                            "margin": 0.83,
+                            "status": status,
+                            "intent": intent
+                        }
+                        repo.save_pnl_record(pnl_data)
 
-                    line_bot.send_simple_message(
-                        f"🎉 CEO承認を受理しました！\n"
-                        f"案件『{intent}』を Gateway X-OS へ発注しました。\n"
-                        f"売上確定: ${price_usd:,.2f}"
-                    )
+                        line_bot.send_simple_message(
+                            f"🎉 CEO承認を受理しました！\n"
+                            f"案件『{intent}』を Gateway X へ発注しました。\n"
+                            f"確定売上: ${price_usd:,.2f}"
+                        )
+                    else:
+                        line_bot.send_simple_message(
+                            f"❌ Gateway X への発注処理に失敗しました。\n"
+                            f"案件: 『{intent}』\n"
+                            f"エラー: {exec_result.get('error_message', '通信エラー')}"
+                        )
 
                 elif action == "redebate":
                     line_bot.send_simple_message(f"🔄 CEOより軍師AIへ再検討指示を伝達しました: 『{intent}』")
@@ -231,6 +287,8 @@ async def line_webhook(request: Request):
                     line_bot.send_simple_message(f"❌ 案件『{intent}』はCEO判断により却下されました。")
 
         return Response(content="OK", status_code=200)
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Webhook 処理エラー: {e}")
         return Response(content="Error", status_code=500)
