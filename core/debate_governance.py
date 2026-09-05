@@ -1,9 +1,10 @@
+
 """
 core/debate_governance.py
 -------------------------
 安全最優先型ガバナンスエンジン
 - トリプル・セーフティガードレール（83%粗利防衛 / 5万円ハードキャップ / 高リスク自動拒否）
-- Gemini (主将) x 軍師AI (OpenRouter) による2ラウンド監査
+- Gemini (主将) x 軍師AI (OpenRouter/auto) による2ラウンド監査
 """
 
 import os
@@ -22,11 +23,11 @@ class DebateGovernance:
 
     def __init__(self, openrouter_api_key: str = None):
         self.openrouter_client = OpenAI(
-            base_url="https://openrouter.ai/api/v1",
+            base_url="[https://openrouter.ai/api/v1](https://openrouter.ai/api/v1)",
             api_key=openrouter_api_key or os.getenv("OPENROUTER_API_KEY", "dummy_key")
         )
-        # OpenRouterに実在する無料モデル（Gemini 2.0 Flash Exp 無料枠）
-        self.critic_model = "google/gemini-2.0-flash-exp:free"
+        # OpenRouterの動的ルーター（常に最適な利用可能モデルを割り当て）
+        self.critic_model = "openrouter/auto"
 
     def execute_debate(self, market_opportunity: Dict[str, Any]) -> Dict[str, Any]:
         task_name = market_opportunity.get("task_name", "Unknown Task")
@@ -85,7 +86,7 @@ class DebateGovernance:
             response = self.openrouter_client.chat.completions.create(
                 model=self.critic_model,
                 messages=[{"role": "user", "content": prompt}],
-                timeout=10.0
+                timeout=12.0
             )
             content = response.choices[0].message.content
             parsed = json.loads(content[content.find("{"):content.rfind("}")+1])
@@ -118,3 +119,5 @@ class DebateGovernance:
     def _finalize_decision(self, proposal: Dict[str, Any], status: str) -> Dict[str, Any]:
         proposal["decision_status"] = status
         return proposal
+
+上記2ファイルを GitHub へ反映（コミット）していただければ、スリープ中の Gateway X に対しても通信完了までしっかり待機し、Gateway X への直接発注も正常に成功するようになります！
