@@ -3,7 +3,7 @@ adapters/line_ceo_bot.py
 
 LINE Messaging API 連携アダプター
 - 日次 P&L レポートの Push 通知送信
-- CEO (人間) 用 1 タップ承認 Flex Message カード送信
+- 5万円以上の要承認メッセージおよび5万円未満の自動承認通知送信
 """
 
 import os
@@ -32,9 +32,28 @@ class LineCeoBot:
         )
         return self._send_push_text(report_text)
 
+    def send_auto_approved_notice(self, proposal: Dict[str, Any], exec_result: Dict[str, Any]) -> bool:
+        """5万円未満の自動承認・発注結果通知"""
+        intent = proposal.get("intent", "案件提案")
+        cost_jpy = proposal.get("estimated_cost_jpy", 0.0)
+        target_price_usd = proposal.get("target_price_usd", 0.0)
+        status = exec_result.get("status", "SUCCESS")
+
+        status_symbol = "✅" if status != "FAILED" else "❌"
+        status_msg = "Gateway X へ自動発注完了" if status != "FAILED" else f"発注失敗 ({exec_result.get('error_message', 'エラー')})"
+
+        text = (
+            f"{status_symbol} 【自律自動発注完了 (<¥50,000)】\n"
+            f"タスク: {intent}\n"
+            f"費用: ¥{cost_jpy:,.0f}\n"
+            f"見込売上: ${target_price_usd:,.2f}\n"
+            f"状態: {status_msg}"
+        )
+        return self._send_push_text(text)
+
     def send_approval_request(self, proposal: Dict[str, Any]) -> bool:
         """
-        高額・重要案件に対する LINE Flex Message 1タップ承認カードを送信
+        5万円以上の高額・重要案件に対する LINE Flex Message 1タップ承認カードを送信
         """
         intent = proposal.get("intent", "案件提案")
         cost_jpy = proposal.get("estimated_cost_jpy", 0.0)
@@ -53,7 +72,7 @@ class LineCeoBot:
                     "contents": [
                         {
                             "type": "text",
-                            "text": "🚨 CEO 意思決定リクエスト",
+                            "text": "🚨 CEO 意思決定リクエスト (高額案件)",
                             "color": "#FFFFFF",
                             "weight": "bold",
                             "size": "sm"
@@ -83,7 +102,7 @@ class LineCeoBot:
                                     "layout": "baseline",
                                     "contents": [
                                         {"type": "text", "text": "推定コスト:", "color": "#aaaaaa", "size": "sm", "flex": 2},
-                                        {"type": "text", "text": f"¥{cost_jpy:,.0f}", "weight": "bold", "size": "sm", "flex": 3}
+                                        {"type": "text", "text": f"¥{cost_jpy:,.0f}", "weight": "bold", "color": "#FF3B30", "size": "sm", "flex": 3}
                                     ]
                                 },
                                 {
