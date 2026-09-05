@@ -2,7 +2,7 @@
 adapters/gateway_client.py
 --------------------------
 Gateway X-OS (v3.2 Protocol) A2A交渉 & 発注クライアント
-- GATEWAY_X_URL 環境変数から外部の Gateway X エンドポイントへ自動接続
+- 失敗時の「成功偽装」を排除し、明確に FAILED ステータスを返却します。
 """
 
 import os
@@ -15,7 +15,6 @@ logger = logging.getLogger("company_x.gateway_client")
 
 class GatewayClient:
     def __init__(self, base_url: str = None):
-        # 環境変数 GATEWAY_X_URL が指定されている場合は優先利用
         self.base_url = (base_url or os.getenv("GATEWAY_X_URL", "")).strip().rstrip("/")
 
     async def call_mcp_execution(self, proposal: Dict[str, Any]) -> Dict[str, Any]:
@@ -29,7 +28,6 @@ class GatewayClient:
             }
         }
 
-        # 接続先URLの設定（GATEWAY_X_URL が無ければ同一サーバー内のローカルフォールバック）
         if self.base_url:
             target_url = f"{self.base_url}/mcp/v1/tools/call"
         else:
@@ -46,5 +44,9 @@ class GatewayClient:
                 logger.info(f"✅ Gateway X からのレスポンス成功: {result}")
                 return result
             except Exception as e:
-                logger.warning(f"⚠️ Gateway X 通信エラー (フォールバック実行): {e}")
-                return {"status": "LOCAL_EXECUTED", "price_usd": proposal["target_price_usd"]}
+                logger.error(f"❌ Gateway X 通信失敗: {e}")
+                return {
+                    "status": "FAILED",
+                    "error_message": str(e),
+                    "price_usd": 0.0
+                }
