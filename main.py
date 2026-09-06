@@ -295,5 +295,3 @@ async def line_webhook(request: Request, x_line_signature: str = Header(None)):
     except Exception as e:
         logger.error(f"Webhook 処理エラー: {e}")
         return Response(content="Error", status_code=500)
-
-こちらの `main.py` をリポジトリルートの `main.py` に上書きコミットしてください！
