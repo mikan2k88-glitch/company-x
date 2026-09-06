@@ -3,7 +3,11 @@ adapters/gateway_client.py
 --------------------------
 Gateway X-OS (v3.2 Protocol) A2A交渉 & 発注クライアント
 - 失敗時の「成功偽装」を排除し、明確に FAILED ステータスを返却します。
-- Render無料枠のスリープ復帰(約30秒)を待つため timeout を45秒に拡張。
+- timeout は 120 秒。内訳: Render無料枠のスリープ復帰(約30秒) +
+  Gateway X側のGemini全モデル(3.8→3.7→3.6)リトライ/フォールバックが
+  重なった場合の最悪ケース(実測で1リクエストあたり最大90秒近く観測)を
+  吸収できるだけの余裕を持たせている(2026-09-05、実際のタイムアウトに
+  よる誤"通信失敗"判定を受けて45秒から延長)。
 """
 
 import os
@@ -37,10 +41,10 @@ class GatewayClient:
 
         logger.info(f"📡 Gateway X 接続試行: {target_url}")
 
-        # Render無料枠のスリープ解除を待てるよう timeout を 45.0 秒に拡張
+        # Gateway X側のGemini全モデルリトライ(最悪90秒近く)を待てるよう timeout を 120.0 秒に設定
         async with httpx.AsyncClient() as client:
             try:
-                response = await client.post(target_url, json=payload, timeout=45.0)
+                response = await client.post(target_url, json=payload, timeout=120.0)
                 response.raise_for_status()
                 result = response.json()
                 logger.info(f"✅ Gateway X からのレスポンス成功: {result}")
