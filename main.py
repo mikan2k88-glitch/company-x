@@ -96,9 +96,9 @@ async def run_autonomous_loop():
 
             pnl_data = {
                 "revenue_usd": price_usd,
-                "cost_jpy": cost_jpy,
-                "profit_usd": price_usd - (cost_jpy / 155.0),
-                "margin": proposal.get("expected_margin", 0.83),
+                "cost_jpy": cost_jpy if status != "FAILED" else 0.0,
+                "profit_usd": price_usd - (cost_jpy / 155.0) if status != "FAILED" else 0.0,
+                "margin": proposal.get("expected_margin", 0.83) if status != "FAILED" else 0.0,
                 "status": status,
                 "intent": proposal.get("intent", "")
             }
@@ -239,7 +239,10 @@ async def line_webhook(request: Request, x_line_signature: str = Header(None)):
 
             # 1タップ承認 Postback 処理
             elif event_type == "postback" and line_bot and gateway and repo:
-                postback_data = event.get("postback", {}).get("data", "")
+                postback_data = event.get("postback", "")
+                if isinstance(postback_data, dict):
+                    postback_data = postback_data.get("data", "")
+
                 params = {k: v[0] for k, v in parse_qs(postback_data).items()}
                 action = params.get("action")
                 intent = params.get("intent", "案件")
@@ -292,3 +295,5 @@ async def line_webhook(request: Request, x_line_signature: str = Header(None)):
     except Exception as e:
         logger.error(f"Webhook 処理エラー: {e}")
         return Response(content="Error", status_code=500)
+
+こちらの `main.py` をリポジトリルートの `main.py` に上書きコミットしてください！
