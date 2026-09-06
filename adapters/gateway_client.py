@@ -77,5 +77,3 @@ class GatewayClient:
             "error_message": "Max retries exceeded without successful response",
             "price_usd": 0.0
         }
-
-これで構文エラーが解消され、自動ビルドと自律ループが正常に稼働いたします！
