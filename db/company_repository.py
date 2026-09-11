@@ -4,6 +4,7 @@ db/company_repository.py
 PostgreSQL (Supabase) / SQLite ハイブリッド永続化リポジトリ
 - P&L 取引ログの永続化
 - システム状態（キルスイッチ：ACTIVE / STOPPED）の永続管理
+- 共有DB capability_rules テーブルからの発注可能ルール事前参照機能を追加
 """
 
 import os
@@ -43,12 +44,19 @@ class CompanyRepository:
                                 cost_jpy DOUBLE PRECISION,
                                 price_usd DOUBLE PRECISION,
                                 status VARCHAR(100),
+                                reason_detail TEXT,
                                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                             );
                             CREATE TABLE IF NOT EXISTS system_config (
                                 key VARCHAR(50) PRIMARY KEY,
                                 value TEXT,
                                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                            );
+                            CREATE TABLE IF NOT EXISTS capability_rules (
+                                id SERIAL PRIMARY KEY,
+                                category VARCHAR(100),
+                                is_enabled BOOLEAN DEFAULT TRUE,
+                                max_budget_jpy DOUBLE PRECISION DEFAULT 50000.0
                             );
                             INSERT INTO system_config (key, value) VALUES ('system_state', 'ACTIVE')
                             ON CONFLICT (key) DO NOTHING;
@@ -65,6 +73,7 @@ class CompanyRepository:
                             cost_jpy REAL,
                             price_usd REAL,
                             status TEXT,
+                            reason_detail TEXT,
                             created_at DATETIME DEFAULT CURRENT_TIMESTAMP
                         );
                     """)
@@ -81,6 +90,20 @@ class CompanyRepository:
                 logger.info("📁 SQLite データベースを初期化完了しました。")
         except Exception as e:
             logger.error(f"データベース初期化エラー: {e}")
+
+    def fetch_active_capability_rules(self) -> List[Dict[str, Any]]:
+        """
+        事前審査用：Gateway X / Supabase 共有DBから有効な発注許可ルールを取得
+        """
+        try:
+            if self.db_url and POSTGRES_AVAILABLE:
+                with psycopg2.connect(self.db_url) as conn:
+                    with conn.cursor(cursor_factory=RealDictCursor) as cursor:
+                        cursor.execute("SELECT category, is_enabled, max_budget_jpy FROM capability_rules WHERE is_enabled = TRUE")
+                        return [dict(row) for row in cursor.fetchall()]
+        except Exception as e:
+            logger.warning(f"capability_rules 参照スキップ (デフォルト許可を適用): {e}")
+        return []
 
     def set_system_state(self, state: str) -> bool:
         try:
@@ -134,23 +157,24 @@ class CompanyRepository:
         cost_jpy = float(pnl_data.get("cost_jpy", 0.0))
         price_usd = float(pnl_data.get("revenue_usd", pnl_data.get("price_usd", 0.0)))
         status = pnl_data.get("status", "SUCCESS")
+        reason_detail = pnl_data.get("reason_detail", "")
 
         try:
             if self.db_url and POSTGRES_AVAILABLE:
                 with psycopg2.connect(self.db_url) as conn:
                     with conn.cursor() as cursor:
                         cursor.execute(
-                            "INSERT INTO growth_backlog (intent, cost_jpy, price_usd, status) VALUES (%s, %s, %s, %s)",
-                            (intent, cost_jpy, price_usd, status)
+                            "INSERT INTO growth_backlog (intent, cost_jpy, price_usd, status, reason_detail) VALUES (%s, %s, %s, %s, %s)",
+                            (intent, cost_jpy, price_usd, status, reason_detail)
                         )
                     conn.commit()
             else:
                 with sqlite3.connect(self.db_path) as conn:
                     conn.execute(
-                        "INSERT INTO growth_backlog (intent, cost_jpy, price_usd, status) VALUES (?, ?, ?, ?)",
-                        (intent, cost_jpy, price_usd, status)
+                        "INSERT INTO growth_backlog (intent, cost_jpy, price_usd, status, reason_detail) VALUES (?, ?, ?, ?, ?)",
+                        (intent, cost_jpy, price_usd, status, reason_detail)
                     )
-            logger.info("DBへのP&Lレコード保存に成功しました。")
+            logger.info(f"DBへのP&Lレコード保存に成功しました (Status: {status})。")
         except Exception as e:
             logger.error(f"P&Lレコード保存失敗: {e}")
 
@@ -160,7 +184,7 @@ class CompanyRepository:
                 with psycopg2.connect(self.db_url) as conn:
                     with conn.cursor(cursor_factory=RealDictCursor) as cursor:
                         cursor.execute(
-                            "SELECT id, intent, cost_jpy, price_usd, status, created_at::text FROM growth_backlog ORDER BY id DESC LIMIT %s",
+                            "SELECT id, intent, cost_jpy, price_usd, status, reason_detail, created_at::text FROM growth_backlog ORDER BY id DESC LIMIT %s",
                             (limit,)
                         )
                         return [dict(row) for row in cursor.fetchall()]
@@ -169,7 +193,7 @@ class CompanyRepository:
                     conn.row_factory = sqlite3.Row
                     cursor = conn.cursor()
                     cursor.execute(
-                        "SELECT id, intent, cost_jpy, price_usd, status, created_at FROM growth_backlog ORDER BY id DESC LIMIT ?",
+                        "SELECT id, intent, cost_jpy, price_usd, status, reason_detail, created_at FROM growth_backlog ORDER BY id DESC LIMIT ?",
                         (limit,)
                     )
                     return [dict(row) for row in cursor.fetchall()]
@@ -182,12 +206,12 @@ class CompanyRepository:
             if self.db_url and POSTGRES_AVAILABLE:
                 with psycopg2.connect(self.db_url) as conn:
                     with conn.cursor() as cursor:
-                        cursor.execute("SELECT COUNT(*), COALESCE(SUM(price_usd), 0.0), COALESCE(SUM(cost_jpy), 0.0) FROM growth_backlog")
+                        cursor.execute("SELECT COUNT(*), COALESCE(SUM(price_usd), 0.0), COALESCE(SUM(cost_jpy), 0.0) FROM growth_backlog WHERE status NOT IN ('FAILED', 'DECLINED', 'NOT_FEASIBLE')")
                         row = cursor.fetchone()
             else:
                 with sqlite3.connect(self.db_path) as conn:
                     cursor = conn.cursor()
-                    cursor.execute("SELECT COUNT(*), COALESCE(SUM(price_usd), 0.0), COALESCE(SUM(cost_jpy), 0.0) FROM growth_backlog")
+                    cursor.execute("SELECT COUNT(*), COALESCE(SUM(price_usd), 0.0), COALESCE(SUM(cost_jpy), 0.0) FROM growth_backlog WHERE status NOT IN ('FAILED', 'DECLINED', 'NOT_FEASIBLE')")
                     row = cursor.fetchone()
 
             count = row[0] or 0
