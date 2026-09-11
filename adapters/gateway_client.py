@@ -2,8 +2,8 @@
 adapters/gateway_client.py
 --------------------------
 Gateway X-OS (v3.2 Protocol) A2A交渉 & 発注クライアント
-- 失敗時の「成功偽装」を排除し、明確に FAILED ステータスを返却します。
-- 429 Too Many Requests やコールドスタート時の通信エラーに対して指数バックオフ自動リトライを実装。
+- レスポンスの分類ロジック（QUOTED / DECLINED / NOT_FEASIBLE / COMM_ERROR）を明確化
+- 指数バックオフ自動リトライを搭載
 """
 
 import os
@@ -20,7 +20,6 @@ class GatewayClient:
         self.base_url = (base_url or os.getenv("GATEWAY_X_URL", "")).strip().rstrip("/")
 
     async def call_mcp_execution(self, proposal: Dict[str, Any]) -> Dict[str, Any]:
-        # STREAMING_CHUNK: Preparing execution payload for Gateway X
         payload = {
             "name": "dispatch_physical_execution",
             "arguments": {
@@ -40,20 +39,35 @@ class GatewayClient:
         logger.info(f"📡 Gateway X 接続試行: {target_url}")
 
         max_retries = 3
-        # STREAMING_CHUNK: Executing Gateway X request with exponential backoff retry
         async with httpx.AsyncClient() as client:
             for attempt in range(1, max_retries + 1):
                 try:
                     response = await client.post(target_url, json=payload, timeout=45.0)
 
-                    # 429 (Too Many Requests) や 5xx (Server Error) はリトライ対象
-                    if response.status_code in (429, 502, 503, 504) or response.status_code >= 500:
+                    # 429 または 一時的なサーバーエラー(5xx) はリトライ
+                    if response.status_code in (429, 502, 503, 504):
                         logger.warning(
                             f"⚠️ Gateway X 応答エラー (HTTP {response.status_code}) [試行 {attempt}/{max_retries}]. "
                             f"{attempt * 2}秒後にリトライします..."
                         )
                         await asyncio.sleep(attempt * 2)
                         continue
+
+                    # HTTP Error 判定
+                    if response.status_code == 403:
+                        res_json = response.json()
+                        return {
+                            "status": "DECLINED",
+                            "error_message": res_json.get("detail", "Gateway X の安全・ガバナンスポリシーにより拒否されました。"),
+                            "price_usd": 0.0
+                        }
+                    elif response.status_code == 422:
+                        res_json = response.json()
+                        return {
+                            "status": "NOT_FEASIBLE",
+                            "error_message": res_json.get("detail", "技術的・物理的に実現不可と判定されました。"),
+                            "price_usd": 0.0
+                        }
 
                     response.raise_for_status()
                     result = response.json()
@@ -67,13 +81,13 @@ class GatewayClient:
                     else:
                         logger.error(f"❌ Gateway X 通信失敗 (全{max_retries}回失敗): {e}")
                         return {
-                            "status": "FAILED",
-                            "error_message": str(e),
+                            "status": "COMM_ERROR",
+                            "error_message": f"通信エラー (全{max_retries}回失敗): {str(e)}",
                             "price_usd": 0.0
                         }
 
         return {
-            "status": "FAILED",
-            "error_message": "Max retries exceeded without successful response",
+            "status": "COMM_ERROR",
+            "error_message": "リトライ上限を超過しました。",
             "price_usd": 0.0
         }
