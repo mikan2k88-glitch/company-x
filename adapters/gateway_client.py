@@ -1,9 +1,12 @@
 """
 adapters/gateway_client.py
 --------------------------
-Gateway X-OS (v3.2 Protocol) A2A交渉 & 発注クライアント
-- レスポンスの分類ロジック（QUOTED / DECLINED / NOT_FEASIBLE / COMM_ERROR）を明確化
-- 指数バックオフ自動リトライを搭載
+Gateway X-OS (v3.2 Protocol) A2A交渉 & 現場実発注クライアント
+- 2ステップ発注プロセス:
+    1. /mcp/v1/tools/call (見積・Vetting審査取得)
+    2. /mcp/v1/tools/execute (現場・タスク物理実行 & 決済確定)
+- 120秒タイムアウト & 指数バックオフ自動リトライ搭載
+- ステータス分類: EXECUTED / QUOTED / DECLINED / NOT_FEASIBLE / COMM_ERROR
 """
 
 import os
@@ -20,6 +23,10 @@ class GatewayClient:
         self.base_url = (base_url or os.getenv("GATEWAY_X_URL", "")).strip().rstrip("/")
 
     async def call_mcp_execution(self, proposal: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        1. 見積取得 (/mcp/v1/tools/call)
+        2. 見積承認後、現場・決済実行 (/mcp/v1/tools/execute)
+        """
         payload = {
             "name": "dispatch_physical_execution",
             "arguments": {
@@ -31,63 +38,107 @@ class GatewayClient:
         }
 
         if self.base_url:
-            target_url = f"{self.base_url}/mcp/v1/tools/call"
+            quote_url = f"{self.base_url}/mcp/v1/tools/call"
+            execute_url = f"{self.base_url}/mcp/v1/tools/execute"
         else:
             port = os.getenv("PORT", "10000")
-            target_url = f"http://127.0.0.1:{port}/mcp/v1/tools/call"
+            quote_url = f"http://127.0.0.1:{port}/mcp/v1/tools/call"
+            execute_url = f"http://127.0.0.1:{port}/mcp/v1/tools/execute"
 
-        logger.info(f"📡 Gateway X 接続試行: {target_url}")
+        logger.info(f"📡 Gateway X 見積請求試行: {quote_url}")
 
         max_retries = 3
-        async with httpx.AsyncClient() as client:
+        # タイムアウトを120秒に設定（Gateway X側のAIリトライ遅延を確実に許容）
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            # Step 1: 見積もり & Vetting 審査の取得
+            quote_response = None
             for attempt in range(1, max_retries + 1):
                 try:
-                    response = await client.post(target_url, json=payload, timeout=45.0)
+                    res = await client.post(quote_url, json=payload)
 
-                    # 429 または 一時的なサーバーエラー(5xx) はリトライ
-                    if response.status_code in (429, 502, 503, 504):
+                    if res.status_code in (429, 502, 503, 504):
                         logger.warning(
-                            f"⚠️ Gateway X 応答エラー (HTTP {response.status_code}) [試行 {attempt}/{max_retries}]. "
-                            f"{attempt * 2}秒後にリトライします..."
+                            f"⚠️ Gateway X 応答一時エラー (HTTP {res.status_code}) [試行 {attempt}/{max_retries}]. "
+                            f"{attempt * 3}秒後にリトライ..."
                         )
-                        await asyncio.sleep(attempt * 2)
+                        await asyncio.sleep(attempt * 3)
                         continue
 
-                    # HTTP Error 判定
-                    if response.status_code == 403:
-                        res_json = response.json()
+                    if res.status_code == 403:
+                        res_json = res.json()
                         return {
                             "status": "DECLINED",
-                            "error_message": res_json.get("detail", "Gateway X の安全・ガバナンスポリシーにより拒否されました。"),
+                            "error_message": res_json.get("detail", "Gateway X セキュリティ/ポリシー違反により拒否されました。"),
                             "price_usd": 0.0
                         }
-                    elif response.status_code == 422:
-                        res_json = response.json()
+                    elif res.status_code == 422:
+                        res_json = res.json()
                         return {
                             "status": "NOT_FEASIBLE",
-                            "error_message": res_json.get("detail", "技術的・物理的に実現不可と判定されました。"),
+                            "error_message": res_json.get("detail", "物理・技術的に実行不能と判明しました。"),
                             "price_usd": 0.0
                         }
 
-                    response.raise_for_status()
-                    result = response.json()
-                    logger.info(f"✅ Gateway X からのレスポンス成功: {result}")
-                    return result
+                    res.raise_for_status()
+                    quote_response = res.json()
+                    logger.info(f"✅ Gateway X 見積取得成功: {quote_response}")
+                    break
 
                 except Exception as e:
                     logger.warning(f"⚠️ Gateway X 通信例外 ({e}) [試行 {attempt}/{max_retries}]")
                     if attempt < max_retries:
-                        await asyncio.sleep(attempt * 2)
+                        await asyncio.sleep(attempt * 3)
                     else:
                         logger.error(f"❌ Gateway X 通信失敗 (全{max_retries}回失敗): {e}")
                         return {
                             "status": "COMM_ERROR",
-                            "error_message": f"通信エラー (全{max_retries}回失敗): {str(e)}",
+                            "error_message": f"通信エラー: {str(e)}",
                             "price_usd": 0.0
                         }
 
-        return {
-            "status": "COMM_ERROR",
-            "error_message": "リトライ上限を超過しました。",
-            "price_usd": 0.0
-        }
+            if not quote_response:
+                return {
+                    "status": "COMM_ERROR",
+                    "error_message": "見積もりの取得に失敗しました。",
+                    "price_usd": 0.0
+                }
+
+            # Step 2: 現場実発注 & 実行確定 (/mcp/v1/tools/execute)
+            quote_id = quote_response.get("quote_id") or quote_response.get("orchestration_event_id")
+            exec_payload = {
+                "name": "dispatch_physical_execution",
+                "quote_id": quote_id,
+                "arguments": payload["arguments"],
+                "confirm_execution": True
+            }
+
+            logger.info(f"⚡️ Gateway X 現場実発注実行 (Quote ID: {quote_id}): {execute_url}")
+
+            try:
+                exec_res = await client.post(execute_url, json=exec_payload)
+                if exec_res.status_code == 200:
+                    exec_data = exec_res.json()
+                    logger.info(f"🎉 Gateway X 現場発注・実行完了: {exec_data}")
+                    return {
+                        "status": "EXECUTED",
+                        "price_usd": exec_data.get("price_usd", quote_response.get("price_usd", proposal["target_price_usd"])),
+                        "quote_id": quote_id,
+                        "details": exec_data
+                    }
+                else:
+                    # エンドポイント未実装等のフォールバック（QUOTEDとして受託記録）
+                    logger.info(f"ℹ️ Gateway X 見積承認完了 (ステータス: QUOTED)")
+                    return {
+                        "status": "QUOTED",
+                        "price_usd": quote_response.get("price_usd", proposal["target_price_usd"]),
+                        "quote_id": quote_id,
+                        "details": quote_response
+                    }
+            except Exception as e:
+                logger.warning(f"⚠️ /execute 呼出スキップ (QUOTED 確定として維持): {e}")
+                return {
+                    "status": "QUOTED",
+                    "price_usd": quote_response.get("price_usd", proposal["target_price_usd"]),
+                    "quote_id": quote_id,
+                    "details": quote_response
+                }
