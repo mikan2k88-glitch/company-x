@@ -1,60 +1,48 @@
 """
 core/scout_engine.py
 --------------------
-マルチソース市場スカウトエンジン (日本語対応版)
-- Qiita API (国内技術トレンド)
-- GitHub Search API (グローバル AI / LLM リポジトリ)
-- Hacker News API (グローバルビジネス / テックニュース)
-上記のリアルタイムデータソースから多角的にニーズを自動収集し、案件を日本語で自動創出します。
+マルチソース市場スカウトエンジン (Gateway X Capability連動版)
+- Qiita API / GitHub Search API / Hacker News API からリアルタイムトレンドを取得
+- 共有DB (capability_rules) から Gateway X が実行可能なカテゴリを参照し、
+  実行不能な案件の生成を水際で防止します。
 """
 
 import logging
 import random
 import httpx
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
+from db.company_repository import CompanyRepository
 
 logger = logging.getLogger("company_x.scout")
 
 
 class ScoutEngine:
     def __init__(self):
-        # 日本語化された案件テンプレートプール
-        self.opportunity_pool = [
-            {
-                "topic": "LLMマルチエージェント応答速度の最適化",
-                "base_intent": "分散型LLMマルチエージェントの処理遅延を計測し、東京リージョン向けに応答速度を高速化",
-                "base_cost_jpy": 8500.0,
-                "category": "グローバルAI技術"
-            },
+        # Gateway X が得意とする「現地・物理・データアノテーション・エッジ収集」対応テンプレート
+        self.capability_aligned_pool = [
             {
                 "topic": "エッジVision AIによる人流密度リアルタイム解析",
-                "base_intent": "省電力ビジョンモデルを配置し、渋谷・新宿エリアのリアルタイム歩行者ヒートマップを生成",
+                "base_intent": "省電力ビジョンカメラを配置し、渋谷・新宿エリアのリアルタイム歩行者ヒートマップを現地計測・サンプリング",
                 "base_cost_jpy": 12000.0,
-                "category": "都市データアナリティクス"
+                "category": "FIELD_PHYSICAL"  # 現場・物理タスク
             },
             {
-                "topic": "自律型B2Bスクレイピング＆LLMデータ構造化",
-                "base_intent": "企業プロフィール情報を自動収集し、LLMを用いて高品質な顧客メタデータを補完・生成",
+                "topic": "現地店舗・看板データのアノテーション＆収集",
+                "base_intent": "都内主要エリアの店舗サイン・看板画像を現地撮影・データ収集し、LLM向けにタグ付けアノテーションを実施",
+                "base_cost_jpy": 8500.0,
+                "category": "FIELD_PHYSICAL"
+            },
+            {
+                "topic": "自律型B2B情報収集＆現場確認サンプリング",
+                "base_intent": "公開企業データベースおよび現地オフィス実在確認を連携し、高品質な企業メタデータを検証作成",
                 "base_cost_jpy": 6400.0,
-                "category": "リード獲得＆スクレイピング"
+                "category": "DATA_COLLECTION"
             },
             {
-                "topic": "自動セキュリティ脆弱性修正パッチ生成",
-                "base_intent": "静的コード解析を実行し、重大なCVE脆弱性に対する修正プルリクエストをAIが自動作成",
+                "topic": "リアルタイム金融・ニュースセンチメントデータアノテーション",
+                "base_intent": "市場ニュースおよび決算短信データに対する精度評価アノテーションタスクを現場ワーカー連携で実行",
                 "base_cost_jpy": 9800.0,
-                "category": "DevSecOps"
-            },
-            {
-                "topic": "マルチモーダル技術文書の自動ローカライズ＆評価",
-                "base_intent": "LLM-as-a-Judgeを活用し、技術ドキュメントの日本語化および翻訳クオリティの自動評価を実施",
-                "base_cost_jpy": 7500.0,
-                "category": "ローカライズ"
-            },
-            {
-                "topic": "リアルタイム金融センチメント分析＆RAG検索エンジン",
-                "base_intent": "決算短信や市場ニュースをリアルタイム解析する軽量RAGパイプラインの構築と金融分析",
-                "base_cost_jpy": 11000.0,
-                "category": "FinTech & RAG"
+                "category": "DATA_COLLECTION"
             }
         ]
 
@@ -70,7 +58,7 @@ class ScoutEngine:
                     return tags
         except Exception as e:
             logger.warning(f"Qiita トレンド取得スキップ: {e}")
-        return ["FastAPI", "Python", "GenerativeAI"]
+        return ["Python", "GenerativeAI", "IoT"]
 
     def _fetch_github_trending_ai(self, client: httpx.Client) -> List[str]:
         """GitHub API からスター急上昇中の AI リポジトリを取得"""
@@ -86,7 +74,7 @@ class ScoutEngine:
                     return repo_names
         except Exception as e:
             logger.warning(f"GitHub トレンド取得スキップ: {e}")
-        return ["langchain", "auto-gpt", "vllm"]
+        return ["vllm", "auto-gpt"]
 
     def _fetch_hacker_news_top(self, client: httpx.Client) -> List[str]:
         """Hacker News API から海外最新テックニュースの見出しを取得"""
@@ -108,40 +96,52 @@ class ScoutEngine:
                     return titles
         except Exception as e:
             logger.warning(f"HackerNews 取得スキップ: {e}")
-        return ["AI Agent Revolution in Enterprise"]
+        return ["AI Edge Sensing Trends"]
 
     def scout_market(self) -> Dict[str, Any]:
         """
-        複数ソース（Qiita / GitHub / HackerNews）からリアルタイム情報を統合し、案件を自動生成
+        Gateway X の capability_rules（対応可能カテゴリ）を参照し、
+        適合する案件のみをスカウト創出
         """
-        logger.info("🔍 [ScoutEngine] マルチソース(Qiita / GitHub / HackerNews)スカウトを実行中...")
+        logger.info("🔍 [ScoutEngine] Gateway X 連携 Capability チェック ＆ スカウトを実行中...")
 
+        # 1. 共有DBから有効ルールを取得して事前検証
+        repo = CompanyRepository()
+        rules = repo.fetch_active_capability_rules()
+        active_categories = [r.get("category") for r in rules if r.get("is_enabled")] if rules else []
+
+        # 2. 外部トレンドの収集
         qiita_tags = []
         github_repos = []
         hn_stories = []
 
-        # 単一 Client セッションで高速並行リクエスト
         with httpx.Client() as client:
             qiita_tags = self._fetch_qiita_trends(client)
             github_repos = self._fetch_github_trending_ai(client)
             hn_stories = self._fetch_hacker_news_top(client)
 
-        # 基礎案件の決定
-        base_opportunity = random.choice(self.opportunity_pool)
-        
-        # 収集データの統合コンテキスト作成（日本語表記）
+        # 3. Gateway X 対応範囲に絞り込んだ案件選定
+        eligible_pool = self.capability_aligned_pool
+        if active_categories:
+            filtered = [item for item in self.capability_aligned_pool if item["category"] in active_categories]
+            if filtered:
+                eligible_pool = filtered
+                logger.info(f"✅ capability_rules により {len(filtered)} 件の適合可能案件候補に絞り込みました。")
+
+        base_opportunity = random.choice(eligible_pool)
+
+        # 文脈情報の付加
         selected_source = random.choice(["Qiita", "GitHub", "HackerNews"])
         if selected_source == "Qiita" and qiita_tags:
-            context_str = f"文脈: Qiitaトレンド [{', '.join(qiita_tags[:3])}]"
+            context_str = f"文脈: Qiita [{', '.join(qiita_tags[:2])}]"
         elif selected_source == "GitHub" and github_repos:
-            context_str = f"文脈: GitHub注目AI [{', '.join(github_repos[:2])}]"
+            context_str = f"文脈: GitHub [{github_repos[0]}]"
         elif hn_stories:
-            context_str = f"文脈: 海外最新ニュース [{hn_stories[0]}]"
+            context_str = f"文脈: HN [{hn_stories[0]}]"
         else:
-            context_str = "文脈: グローバルAIトレンド"
+            context_str = "文脈: AI/エッジリアルタイムニーズ"
 
-        # コストゆらぎ（需給バランスの表現）
-        cost_variance = random.randint(-1000, 2000)
+        cost_variance = random.randint(-500, 1500)
         final_cost = max(5000.0, base_opportunity["base_cost_jpy"] + cost_variance)
 
         scouted_item = {
@@ -151,7 +151,7 @@ class ScoutEngine:
         }
 
         logger.info(
-            f"💡 [マルチソース案件発掘完了] ソース: {selected_source} | "
+            f"💡 [Capability適合案件発掘完了] ソース: {selected_source} | "
             f"タスク: {scouted_item['task_name']} | 見積予算: ¥{scouted_item['estimated_cost_jpy']:,}"
         )
 
