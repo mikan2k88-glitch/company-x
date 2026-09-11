@@ -105,11 +105,13 @@ class GatewayClient:
 
             # Step 2: 現場実発注 & 実行確定 (/mcp/v1/tools/execute)
             quote_id = quote_response.get("quote_id") or quote_response.get("orchestration_event_id")
+
+            # Gateway X側の ExecuteRequest スキーマ (client_id, quote, payment_method_id) に適合させる
+            payment_method_id = os.getenv("GATEWAY_X_PAYMENT_METHOD_ID")
             exec_payload = {
-                "name": "dispatch_physical_execution",
-                "quote_id": quote_id,
-                "arguments": payload["arguments"],
-                "confirm_execution": True
+                "client_id": "company_x_brain",
+                "quote": quote_response,
+                "payment_method_id": payment_method_id,
             }
 
             logger.info(f"⚡️ Gateway X 現場実発注実行 (Quote ID: {quote_id}): {execute_url}")
@@ -126,13 +128,16 @@ class GatewayClient:
                         "details": exec_data
                     }
                 else:
-                    # エンドポイント未実装等のフォールバック（QUOTEDとして受託記録）
-                    logger.info(f"ℹ️ Gateway X 見積承認完了 (ステータス: QUOTED)")
+                    # 422等、失敗時のログ出力と詳細ハンドリング
+                    logger.error(
+                        f"❌ Gateway X /execute 失敗 (HTTP {exec_res.status_code}): {exec_res.text[:500]}"
+                    )
                     return {
                         "status": "QUOTED",
                         "price_usd": quote_response.get("price_usd", proposal["target_price_usd"]),
                         "quote_id": quote_id,
-                        "details": quote_response
+                        "details": quote_response,
+                        "execute_error": exec_res.text[:500],
                     }
             except Exception as e:
                 logger.warning(f"⚠️ /execute 呼出スキップ (QUOTED 確定として維持): {e}")
