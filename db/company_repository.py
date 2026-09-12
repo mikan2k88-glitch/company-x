@@ -93,13 +93,17 @@ class CompanyRepository:
 
     def fetch_active_capability_rules(self) -> List[Dict[str, Any]]:
         """
-        事前審査用：Gateway X / Supabase 共有DBから有効な発注許可ルールを取得
+        事前審査用：Gateway X / Supabase 共有DBから実行可能性ルールを取得。
+        Gateway X側の実スキーマは (keyword, allowed, reason) であり、
+        (category, is_enabled, max_budget_jpy) という列は存在しない。
+        以前の実装はこの不一致により例外→握りつぶし→常に空リスト返却となっていた
+        (=このフィルタ機能が一度も実際には効いていなかった)。
         """
         try:
             if self.db_url and POSTGRES_AVAILABLE:
                 with psycopg2.connect(self.db_url) as conn:
                     with conn.cursor(cursor_factory=RealDictCursor) as cursor:
-                        cursor.execute("SELECT category, is_enabled, max_budget_jpy FROM capability_rules WHERE is_enabled = TRUE")
+                        cursor.execute("SELECT keyword, allowed, reason FROM capability_rules")
                         return [dict(row) for row in cursor.fetchall()]
         except Exception as e:
             logger.warning(f"capability_rules 参照スキップ (デフォルト許可を適用): {e}")
