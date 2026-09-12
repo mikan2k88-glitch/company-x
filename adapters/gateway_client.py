@@ -6,7 +6,7 @@ Gateway X-OS (v3.2 Protocol) A2A交渉 & 現場実発注クライアント
     1. /mcp/v1/tools/call (見積・Vetting審査取得)
     2. /mcp/v1/tools/execute (現場・タスク物理実行 & 決済確定)
 - 120秒タイムアウト & 指数バックオフ自動リトライ搭載
-- ステータス分類: EXECUTED / QUOTED / DECLINED / NOT_FEASIBLE / COMM_ERROR
+- 正確なステータス分類: EXECUTED / QUOTED / DECLINED / NOT_FEASIBLE / COMM_ERROR / EXECUTION_FAILED
 """
 
 import os
@@ -48,9 +48,7 @@ class GatewayClient:
         logger.info(f"📡 Gateway X 見積請求試行: {quote_url}")
 
         max_retries = 3
-        # タイムアウトを120秒に設定（Gateway X側のAIリトライ遅延を確実に許容）
         async with httpx.AsyncClient(timeout=120.0) as client:
-            # Step 1: 見積もり & Vetting 審査の取得
             quote_response = None
             for attempt in range(1, max_retries + 1):
                 try:
@@ -103,11 +101,9 @@ class GatewayClient:
                     "price_usd": 0.0
                 }
 
-            # Step 2: 現場実発注 & 実行確定 (/mcp/v1/tools/execute)
             quote_id = quote_response.get("quote_id") or quote_response.get("orchestration_event_id")
-
-            # Gateway X側の ExecuteRequest スキーマ (client_id, quote, payment_method_id) に適合させる
             payment_method_id = os.getenv("GATEWAY_X_PAYMENT_METHOD_ID")
+            
             exec_payload = {
                 "client_id": "company_x_brain",
                 "quote": quote_response,
@@ -128,22 +124,22 @@ class GatewayClient:
                         "details": exec_data
                     }
                 else:
-                    # 422等、失敗時のログ出力と詳細ハンドリング
                     logger.error(
                         f"❌ Gateway X /execute 失敗 (HTTP {exec_res.status_code}): {exec_res.text[:500]}"
                     )
                     return {
-                        "status": "QUOTED",
-                        "price_usd": quote_response.get("price_usd", proposal["target_price_usd"]),
+                        "status": "EXECUTION_FAILED",
+                        "price_usd": 0.0,
                         "quote_id": quote_id,
-                        "details": quote_response,
-                        "execute_error": exec_res.text[:500],
+                        "error_message": exec_res.text[:500],
+                        "details": quote_response
                     }
             except Exception as e:
-                logger.warning(f"⚠️ /execute 呼出スキップ (QUOTED 確定として維持): {e}")
+                logger.error(f"❌ /execute 呼び出し通信例外: {e}")
                 return {
-                    "status": "QUOTED",
-                    "price_usd": quote_response.get("price_usd", proposal["target_price_usd"]),
+                    "status": "EXECUTION_FAILED",
+                    "price_usd": 0.0,
                     "quote_id": quote_id,
+                    "error_message": str(e),
                     "details": quote_response
                 }
