@@ -3,14 +3,13 @@ core/scout_engine.py
 --------------------
 マルチソース市場スカウトエンジン (Gateway X Capability連動版)
 - Qiita API / GitHub Search API / Hacker News API からリアルタイムトレンドを取得
-- 共有DB (capability_rules) から Gateway X が実行可能なカテゴリを参照し、
-  実行不能な案件の生成を水際で防止します。
+- 共有DB (capability_rules: keyword, allowed, reason) から Gateway X が実行不可と定義するキーワードを事前フィルタリングします。
 """
 
 import logging
 import random
 import httpx
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List
 from db.company_repository import CompanyRepository
 
 logger = logging.getLogger("company_x.scout")
@@ -18,36 +17,35 @@ logger = logging.getLogger("company_x.scout")
 
 class ScoutEngine:
     def __init__(self):
-        # Gateway X が得意とする「現地・物理・データアノテーション・エッジ収集」対応テンプレート
+        # Gateway X が実行得意とする現地・物理・アノテーションタスクプール
         self.capability_aligned_pool = [
             {
                 "topic": "エッジVision AIによる人流密度リアルタイム解析",
                 "base_intent": "省電力ビジョンカメラを配置し、渋谷・新宿エリアのリアルタイム歩行者ヒートマップを現地計測・サンプリング",
                 "base_cost_jpy": 12000.0,
-                "category": "FIELD_PHYSICAL"  # 現場・物理タスク
+                "keywords": ["エッジVision", "人流密度", "現地計測"]
             },
             {
                 "topic": "現地店舗・看板データのアノテーション＆収集",
-                "base_intent": "都内主要エリアの店舗サイン・看板画像を現地撮影・データ収集し、LLM向けにタグ付けアノテーションを実施",
+                "base_intent": "都内主要エリアの店舗サイン・看板画像を現地撮影・データ収集し、データセット向けにアノテーションを実施",
                 "base_cost_jpy": 8500.0,
-                "category": "FIELD_PHYSICAL"
+                "keywords": ["現地撮影", "看板データ", "アノテーション"]
             },
             {
                 "topic": "自律型B2B情報収集＆現場確認サンプリング",
                 "base_intent": "公開企業データベースおよび現地オフィス実在確認を連携し、高品質な企業メタデータを検証作成",
                 "base_cost_jpy": 6400.0,
-                "category": "DATA_COLLECTION"
+                "keywords": ["現場確認", "オフィス実在確認", "企業データ検証"]
             },
             {
-                "topic": "リアルタイム金融・ニュースセンチメントデータアノテーション",
-                "base_intent": "市場ニュースおよび決算短信データに対する精度評価アノテーションタスクを現場ワーカー連携で実行",
+                "topic": "現地交通量・流動パターンデータ実測",
+                "base_intent": "主要交差点における現地トラフィックパターンおよび交通量データをサンプリング・評価",
                 "base_cost_jpy": 9800.0,
-                "category": "DATA_COLLECTION"
+                "keywords": ["現地トラフィック", "交通量実測", "サンプリング"]
             }
         ]
 
     def _fetch_qiita_trends(self, client: httpx.Client) -> List[str]:
-        """Qiita API から国内トレンドタグを取得"""
         try:
             url = "https://qiita.com/api/v2/tags?page=1&per_page=5&sort=count"
             res = client.get(url, timeout=3.5)
@@ -61,7 +59,6 @@ class ScoutEngine:
         return ["Python", "GenerativeAI", "IoT"]
 
     def _fetch_github_trending_ai(self, client: httpx.Client) -> List[str]:
-        """GitHub API からスター急上昇中の AI リポジトリを取得"""
         try:
             url = "https://api.github.com/search/repositories?q=topic:llm+topic:ai&sort=stars&order=desc&per_page=3"
             headers = {"User-Agent": "Company-X-ScoutEngine/3.2"}
@@ -77,7 +74,6 @@ class ScoutEngine:
         return ["vllm", "auto-gpt"]
 
     def _fetch_hacker_news_top(self, client: httpx.Client) -> List[str]:
-        """Hacker News API から海外最新テックニュースの見出しを取得"""
         try:
             url = "https://hacker-news.firebaseio.com/v0/topstories.json"
             res = client.get(url, timeout=3.5)
@@ -100,37 +96,39 @@ class ScoutEngine:
 
     def scout_market(self) -> Dict[str, Any]:
         """
-        Gateway X の capability_rules（対応可能カテゴリ）を参照し、
-        適合する案件のみをスカウト創出
+        capability_rules (keyword, allowed, reason) テーブルを参照し、
+        非対応キーワード（スクレイピング、純粋LLM等）が含まれる案件を事前除外してスカウト
         """
         logger.info("🔍 [ScoutEngine] Gateway X 連携 Capability チェック ＆ スカウトを実行中...")
 
-        # 1. 共有DBから有効ルールを取得して事前検証
         repo = CompanyRepository()
         rules = repo.fetch_active_capability_rules()
-        active_categories = [r.get("category") for r in rules if r.get("is_enabled")] if rules else []
 
-        # 2. 外部トレンドの収集
-        qiita_tags = []
-        github_repos = []
-        hn_stories = []
+        disallowed_keywords = set()
+        if rules:
+            for r in rules:
+                kw = r.get("keyword")
+                allowed = r.get("allowed")
+                if kw and (allowed is False or allowed == 0 or str(allowed).lower() == "false"):
+                    disallowed_keywords.add(kw.lower())
+
+        eligible_pool = []
+        for candidate in self.capability_aligned_pool:
+            intent_text = (candidate["topic"] + " " + candidate["base_intent"]).lower()
+            is_disallowed = any(dk in intent_text for dk in disallowed_keywords)
+            if not is_disallowed:
+                eligible_pool.append(candidate)
+
+        if not eligible_pool:
+            eligible_pool = self.capability_aligned_pool
 
         with httpx.Client() as client:
             qiita_tags = self._fetch_qiita_trends(client)
             github_repos = self._fetch_github_trending_ai(client)
             hn_stories = self._fetch_hacker_news_top(client)
 
-        # 3. Gateway X 対応範囲に絞り込んだ案件選定
-        eligible_pool = self.capability_aligned_pool
-        if active_categories:
-            filtered = [item for item in self.capability_aligned_pool if item["category"] in active_categories]
-            if filtered:
-                eligible_pool = filtered
-                logger.info(f"✅ capability_rules により {len(filtered)} 件の適合可能案件候補に絞り込みました。")
-
         base_opportunity = random.choice(eligible_pool)
 
-        # 文脈情報の付加
         selected_source = random.choice(["Qiita", "GitHub", "HackerNews"])
         if selected_source == "Qiita" and qiita_tags:
             context_str = f"文脈: Qiita [{', '.join(qiita_tags[:2])}]"
