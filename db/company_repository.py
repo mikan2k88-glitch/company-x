@@ -4,7 +4,7 @@ db/company_repository.py
 PostgreSQL (Supabase) / SQLite ハイブリッド永続化リポジトリ
 - P&L 取引ログの永続化
 - システム状態（キルスイッチ：ACTIVE / STOPPED）の永続管理
-- 共有DB capability_rules テーブルからの発注可能ルール事前参照機能を追加
+- 共有DB capability_rules (keyword, allowed, reason) テーブルからの発注可能ルール事前参照
 """
 
 import os
@@ -54,9 +54,9 @@ class CompanyRepository:
                             );
                             CREATE TABLE IF NOT EXISTS capability_rules (
                                 id SERIAL PRIMARY KEY,
-                                category VARCHAR(100),
-                                is_enabled BOOLEAN DEFAULT TRUE,
-                                max_budget_jpy DOUBLE PRECISION DEFAULT 50000.0
+                                keyword VARCHAR(100),
+                                allowed BOOLEAN DEFAULT TRUE,
+                                reason TEXT
                             );
                             INSERT INTO system_config (key, value) VALUES ('system_state', 'ACTIVE')
                             ON CONFLICT (key) DO NOTHING;
@@ -85,6 +85,14 @@ class CompanyRepository:
                         );
                     """)
                     conn.execute("""
+                        CREATE TABLE IF NOT EXISTS capability_rules (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            keyword TEXT,
+                            allowed BOOLEAN DEFAULT 1,
+                            reason TEXT
+                        );
+                    """)
+                    conn.execute("""
                         INSERT OR IGNORE INTO system_config (key, value) VALUES ('system_state', 'ACTIVE');
                     """)
                 logger.info("📁 SQLite データベースを初期化完了しました。")
@@ -93,11 +101,7 @@ class CompanyRepository:
 
     def fetch_active_capability_rules(self) -> List[Dict[str, Any]]:
         """
-        事前審査用：Gateway X / Supabase 共有DBから実行可能性ルールを取得。
-        Gateway X側の実スキーマは (keyword, allowed, reason) であり、
-        (category, is_enabled, max_budget_jpy) という列は存在しない。
-        以前の実装はこの不一致により例外→握りつぶし→常に空リスト返却となっていた
-        (=このフィルタ機能が一度も実際には効いていなかった)。
+        事前審査用：Gateway X / Supabase 共有DBから capability_rules (keyword, allowed, reason) を取得
         """
         try:
             if self.db_url and POSTGRES_AVAILABLE:
@@ -105,8 +109,14 @@ class CompanyRepository:
                     with conn.cursor(cursor_factory=RealDictCursor) as cursor:
                         cursor.execute("SELECT keyword, allowed, reason FROM capability_rules")
                         return [dict(row) for row in cursor.fetchall()]
+            else:
+                with sqlite3.connect(self.db_path) as conn:
+                    conn.row_factory = sqlite3.Row
+                    cursor = conn.cursor()
+                    cursor.execute("SELECT keyword, allowed, reason FROM capability_rules")
+                    return [dict(row) for row in cursor.fetchall()]
         except Exception as e:
-            logger.warning(f"capability_rules 参照スキップ (デフォルト許可を適用): {e}")
+            logger.warning(f"capability_rules 参照スキップ: {e}")
         return []
 
     def set_system_state(self, state: str) -> bool:
@@ -210,12 +220,12 @@ class CompanyRepository:
             if self.db_url and POSTGRES_AVAILABLE:
                 with psycopg2.connect(self.db_url) as conn:
                     with conn.cursor() as cursor:
-                        cursor.execute("SELECT COUNT(*), COALESCE(SUM(price_usd), 0.0), COALESCE(SUM(cost_jpy), 0.0) FROM growth_backlog WHERE status NOT IN ('FAILED', 'DECLINED', 'NOT_FEASIBLE')")
+                        cursor.execute("SELECT COUNT(*), COALESCE(SUM(price_usd), 0.0), COALESCE(SUM(cost_jpy), 0.0) FROM growth_backlog WHERE status NOT IN ('FAILED', 'DECLINED', 'NOT_FEASIBLE', 'COMM_ERROR', 'EXECUTION_FAILED')")
                         row = cursor.fetchone()
             else:
                 with sqlite3.connect(self.db_path) as conn:
                     cursor = conn.cursor()
-                    cursor.execute("SELECT COUNT(*), COALESCE(SUM(price_usd), 0.0), COALESCE(SUM(cost_jpy), 0.0) FROM growth_backlog WHERE status NOT IN ('FAILED', 'DECLINED', 'NOT_FEASIBLE')")
+                    cursor.execute("SELECT COUNT(*), COALESCE(SUM(price_usd), 0.0), COALESCE(SUM(cost_jpy), 0.0) FROM growth_backlog WHERE status NOT IN ('FAILED', 'DECLINED', 'NOT_FEASIBLE', 'COMM_ERROR', 'EXECUTION_FAILED')")
                     row = cursor.fetchone()
 
             count = row[0] or 0
