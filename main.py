@@ -1,297 +1,348 @@
-"""
-main.py
--------
-Gateway X-OS (v3.2 Protocol) FastAPI 統合エントリーポイント
-- LINE Webhook HMAC-SHA256 署名検証追加 (セキュリティ完全化)
-- キルスイッチ（STOPPED状態）の自動チェック＆LINE「ストップ/再開」制御追加
-- 5万円閾値による自動発注 vs LINE CEO手動承認の分岐ロジック
-- 失敗時の偽装を完全排除
-"""
-
 import os
 import sys
-import hmac
-import hashlib
-import base64
-import asyncio
+import time
 import logging
-from urllib.parse import parse_qs
+from typing import Dict, Any, Optional
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Request, Response, Header, HTTPException
-from fastapi.responses import HTMLResponse, FileResponse
+
+from fastapi import FastAPI, Request, Header, HTTPException, BackgroundTasks
+from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from apscheduler.triggers.cron import CronTrigger
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("gateway_x_main")
+# カンパニーX 内部モジュールのインポート
+from db.company_repository import CompanyRepository
+from core.scout_engine import ScoutEngine
+from core.debate_governance import DebateGovernance
+from adapters.gateway_client import GatewayClient
+from adapters.internal_executor import InternalExecutor
+from adapters.line_ceo_bot import LineCeoBot
 
-# カレントディレクトリを Python パスに追加
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# ロガーの設定
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+)
+logger = logging.getLogger("company_x.main")
 
-MODULES_READY = False
-try:
-    from core.scout_engine import ScoutEngine
-    from core.debate_governance import DebateGovernance
-    from adapters.gateway_client import GatewayClient
-    from adapters.line_ceo_bot import LineCeoBot
-    from db.company_repository import CompanyRepository
+# システムコンポーネントの初期化
+repository = CompanyRepository()
+scout_engine = ScoutEngine(repository=repository)
+debate_governance = DebateGovernance()
+gateway_client = GatewayClient()
+internal_executor = InternalExecutor()
+line_bot = LineCeoBot()
 
-    logger.info("ルート直下のモジュール (core, adapters, db) の読み込みに成功しました。")
-    MODULES_READY = True
-except Exception as e:
-    logger.error(f"モジュール読み込み失敗の詳細: {e}", exc_info=True)
-
-
-def verify_line_signature(body_bytes: bytes, signature: str, channel_secret: str) -> bool:
-    """LINE Webhook HMAC-SHA256 署名検証"""
-    if not channel_secret:
-        logger.warning("⚠️ LINE_CHANNEL_SECRET が未設定のため、署名検証をスキップします。")
-        return True
-    if not signature:
-        return False
-    
-    hash_val = hmac.new(channel_secret.encode('utf-8'), body_bytes, hashlib.sha256).digest()
-    expected_signature = base64.b64encode(hash_val).decode('utf-8')
-    return hmac.compare_digest(expected_signature, signature)
-
-
-async def run_autonomous_loop():
-    """
-    自律成長ループの実行ロジック
-    - キルスイッチ (STOPPED) チェック
-    - 5万円未満は自動発注、5万円以上はCEO承認待ち
-    """
-    if not MODULES_READY:
-        logger.warning("モジュール未準備のため自律ループをスキップします。")
-        return
-
-    repo = CompanyRepository()
-
-    if repo.is_system_stopped():
-        logger.info("🛑 [キルスイッチ発動中] システムが停止（STOPPED）状態のため、自律成長ループをスキップします。")
-        return
-
-    logger.info("=== カンパニーX 自律成長ループ開始 ===")
-    try:
-        scout = ScoutEngine()
-        debate = DebateGovernance()
-        gateway = GatewayClient()
-        line_bot = LineCeoBot()
-
-        # 1. 案件スカウト
-        opportunity = scout.scout_market()
-
-        # 2. 軍師AIディベート
-        proposal = debate.execute_debate(opportunity)
-
-        cost_jpy = proposal.get("estimated_cost_jpy", 0.0)
-
-        if cost_jpy < line_bot.APPROVAL_THRESHOLD_JPY:
-            # 5万円未満：自動発注＆記録
-            logger.info(f"⚡️ [自動承認] 予算 ¥{cost_jpy:,.0f} < ¥50,000 のため、自動発注を実行します。")
-            execution_result = await gateway.call_mcp_execution(proposal)
-
-            status = execution_result.get("status", "SUCCESS")
-            price_usd = proposal.get("target_price_usd", 0.0) if status != "FAILED" else 0.0
-
-            pnl_data = {
-                "revenue_usd": price_usd,
-                "cost_jpy": cost_jpy if status != "FAILED" else 0.0,
-                "profit_usd": price_usd - (cost_jpy / 155.0) if status != "FAILED" else 0.0,
-                "margin": proposal.get("expected_margin", 0.83) if status != "FAILED" else 0.0,
-                "status": status,
-                "intent": proposal.get("intent", "")
-            }
-
-            repo.save_pnl_record(pnl_data)
-            line_bot.send_auto_approved_notice(proposal, execution_result)
-        else:
-            # 5万円以上：CEO承認カードをLINEへ送信し待機
-            logger.info(f"🚨 [要CEO承認] 予算 ¥{cost_jpy:,.0f} >= ¥50,000 のため、LINE承認カードを送信します。")
-            line_bot.send_approval_request(proposal)
-
-        logger.info("=== カンパニーX 自律成長ループ正常完了 ===")
-    except Exception as e:
-        logger.error(f"自律成長ループ実行エラー: {e}")
-
-
-# スケジューラの初期化
 scheduler = AsyncIOScheduler(timezone="Asia/Tokyo")
+
+# グローバルキルスイッチ状態 (メモリ保持 + DB共有)
+IS_KILLED: bool = False
+
+
+# ==========================================
+# 1. ライフサイクル ＆ 定時バックグラウンドタスク (APScheduler)
+# ==========================================
+
+async def run_daily_autonomous_workflow():
+    """
+    毎朝 09:00 JST に自動実行される日次スカウト＆意思決定＆発注パイプライン
+    """
+    global IS_KILLED
+    if IS_KILLED or repository.get_kill_switch_status():
+        logger.warning("[Cron] キルスイッチ作動中のため、日次ワークフローをスキップします。")
+        return
+
+    logger.info("[Cron] 日次スカウト・ディベートワークフローを開始します。")
+
+    try:
+        # Step 1: トレンドスカウト & capability_rules DB による事前フィルタ処理
+        candidates = scout_engine.scout_opportunities()
+        logger.info(f"[Cron] 検出された適合候補タスク件数: {len(candidates)}")
+
+        for candidate in candidates:
+            if IS_KILLED or repository.get_kill_switch_status():
+                logger.warning("[Cron] ループ中にキルスイッチが検出されたため中断します。")
+                break
+
+            task_id = candidate.get("task_id")
+            task_type = candidate.get("task_type")
+            execution_type = candidate.get("execution_type", "GATEWAY_X")
+            estimated_price_jpy = candidate.get("estimated_price_jpy", 0)
+
+            # Step 2: Gemini 3 Flash ✕ OpenRouter 2ラウンドディベート (粗利83%防衛 & ¥50,000キャップ判定)
+            governance_result = debate_governance.evaluate_opportunity(candidate)
+            
+            if not governance_result.get("approved"):
+                logger.info(f"[Cron] タスク {task_id} はガバナンス審査により却下されました。理由: {governance_result.get('reason')}")
+                continue
+
+            # Step 3: 金額分岐 & 実行ルーティング
+            if estimated_price_jpy >= 50000:
+                # 5万円以上 ➔ LINE Flex Message 1タップ承認カードの送信 (手動承認待ち)
+                line_bot.send_approval_card(
+                    task_id=task_id,
+                    title=candidate.get("title", "高額タスク"),
+                    amount_jpy=estimated_price_jpy,
+                    reason=governance_result.get("reason", "")
+                )
+                logger.info(f"[Cron] タスク {task_id} は ¥50,000 超のため LINE CEO 承認待ちへルーティングしました。")
+            else:
+                # 5万円未満 ➔ 即時自動発注／自動実行
+                execute_task_pipeline(candidate)
+
+    except Exception as e:
+        logger.error(f"[Cron] ワークフロー実行中に例外が発生しました: {str(e)}", exc_info=True)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("🤖 カンパニーX スケジューラーを起動中...")
-
-    # 1. サーバー起動時にまず1回即時実行
-    asyncio.create_task(run_autonomous_loop())
-
-    # 2. 毎朝 09:00 (JST) に自動実行する Cron ジョブを追加
+    """
+    FastAPI 起動・停止時のライフサイクルイベント管理
+    """
+    logger.info("===========================================")
+    logger.info("   カンパニーX Gateway X-OS v3.2 起動完了   ")
+    logger.info("===========================================")
+    
+    # 毎朝 09:00 JST 定時タスクの登録
     scheduler.add_job(
-        run_autonomous_loop,
-        CronTrigger(hour=9, minute=0, timezone="Asia/Tokyo"),
-        id="daily_autonomous_loop",
-        replace_existing=True
+        run_daily_autonomous_workflow,
+        trigger="cron",
+        hour=9,
+        minute=0,
+        id="daily_workflow"
     )
     scheduler.start()
-    logger.info("⏰ 毎朝 09:00 (JST) の定時実行ジョブをセットしました。")
-
     yield
-
     scheduler.shutdown()
+    logger.info("カンパニーX システムをシャットダウンしました。")
 
 
-app = FastAPI(title="Gateway X-OS API", lifespan=lifespan)
+app = FastAPI(
+    title="Company X - Autonomous Operations Platform",
+    version="3.2.0",
+    lifespan=lifespan
+)
 
 
-@app.get("/")
-def read_root():
-    return {
-        "status": "online",
-        "system": "Gateway X-OS v3.2 Protocol",
-        "cron": "Active at 09:00 JST",
-        "dashboard": "/dashboard"
-    }
+# ==========================================
+# 2. タスク実行制御コアロジック
+# ==========================================
+
+def execute_task_pipeline(candidate: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    タスク種別（現場・物理 vs デジタル・内部）に応じた二輪駆動タスク実行パイプライン
+    """
+    task_id = candidate.get("task_id")
+    task_type = candidate.get("task_type")
+    execution_type = candidate.get("execution_type", "AUTO")
+    payload = candidate.get("payload", {})
+    amount_jpy = candidate.get("estimated_price_jpy", 0)
+
+    # A. 内部デジタル処理 (Render完結型) の判定・実行
+    if execution_type == "INTERNAL" or task_type in ["data_structuring", "research_report", "content_generation"]:
+        logger.info(f"[Pipeline] 内部実行エンジン (InternalExecutor) にルーティング: {task_id}")
+        
+        result = internal_executor.execute_task(task_type, payload)
+        
+        if result.get("status") == "SUCCESS":
+            # 成功時: 証跡永続化 & 高粗利ログ
+            repository.save_execution_log(
+                task_id=task_id,
+                execution_type="INTERNAL_RENDER",
+                status="EXECUTED",
+                revenue_jpy=amount_jpy,
+                cost_jpy=int(amount_jpy * 0.01), # 原価約1%
+                gross_margin="99.0%"
+            )
+            line_bot.send_push_message(
+                f"【完全自動完了】内部エンジンでデジタルタスク完了\n"
+                f"タスクID: {task_id}\n"
+                f"売上: ¥{amount_jpy:,} (粗利 99%)\n"
+                f"処理時間: {result.get('execution_time_sec')}秒"
+            )
+            return {"status": "SUCCESS", "execution_type": "INTERNAL", "result": result}
+        else:
+            # 失敗時: 売上偽装を廃止し EXECUTION_FAILED を記録
+            repository.save_execution_log(
+                task_id=task_id,
+                execution_type="INTERNAL_RENDER",
+                status="EXECUTION_FAILED",
+                revenue_jpy=0,
+                cost_jpy=0,
+                gross_margin="0.0%"
+            )
+            line_bot.send_push_message(f"【内部実行失敗】タスク {task_id} の処理に失敗しました。")
+            return {"status": "EXECUTION_FAILED", "execution_type": "INTERNAL", "reason": result.get("error_message")}
+
+    # B. 現場・物理タスク (Gateway X 2ステップ発注) の実行
+    else:
+        logger.info(f"[Pipeline] Gateway X A2A クライアントへルーティング: {task_id}")
+        
+        # Step 1: /mcp/v1/tools/call 見積取得
+        quote_result = gateway_client.get_quote(task_id, payload)
+        if not quote_result or quote_result.get("status") != "QUOTED":
+            repository.save_execution_log(
+                task_id=task_id,
+                execution_type="GATEWAY_X",
+                status="EXECUTION_FAILED",
+                revenue_jpy=0,
+                cost_jpy=0
+            )
+            return {"status": "EXECUTION_FAILED", "execution_type": "GATEWAY_X", "reason": "見積取得失敗"}
+
+        # Step 2: /mcp/v1/tools/execute 実発注
+        exec_result = gateway_client.execute_order(
+            task_id=task_id,
+            quote=quote_result.get("quote"),
+            payment_method_id=os.getenv("GATEWAY_X_PAYMENT_METHOD_ID")
+        )
+
+        if exec_result and exec_result.get("status") == "EXECUTED":
+            repository.save_execution_log(
+                task_id=task_id,
+                execution_type="GATEWAY_X",
+                status="EXECUTED",
+                revenue_jpy=amount_jpy,
+                cost_jpy=int(amount_jpy * 0.17), # 83% 粗利防衛
+                gross_margin="83.0%"
+            )
+            line_bot.send_push_message(
+                f"【Gateway X 発注完了】現場実発注が完了しました。\n"
+                f"タスクID: {task_id}\n"
+                f"発注額: ¥{amount_jpy:,}"
+            )
+            return {"status": "SUCCESS", "execution_type": "GATEWAY_X", "result": exec_result}
+        else:
+            # バックオフ失敗等の確定エラーログ
+            repository.save_execution_log(
+                task_id=task_id,
+                execution_type="GATEWAY_X",
+                status="EXECUTION_FAILED",
+                revenue_jpy=0,
+                cost_jpy=0
+            )
+            line_bot.send_push_message(f"【Gateway X 発注失敗】タスク {task_id} の発注が失敗しました (EXECUTION_FAILED)。")
+            return {"status": "EXECUTION_FAILED", "execution_type": "GATEWAY_X", "reason": "実発注実行エラー"}
 
 
-@app.get("/dashboard", response_class=HTMLResponse)
-async def get_dashboard():
-    dashboard_path = os.path.join(os.path.dirname(__file__), "dashboard.html")
-    if os.path.exists(dashboard_path):
-        return FileResponse(dashboard_path)
-    return HTMLResponse(
-        content="<h2>⚠️ dashboard.html がリポジトリ直下に配置されていません。GitHubへアップロードしてください。</h2>",
-        status_code=404
-    )
+# ==========================================
+# 3. リクエスト/レスポンス Pydantic モデル
+# ==========================================
+
+class TaskExecuteRequest(BaseModel):
+    task_id: str
+    task_type: str
+    execution_target: Optional[str] = "AUTO" # AUTO, GATEWAY_X, INTERNAL
+    amount_jpy: int
+    payload: Dict[str, Any]
 
 
-@app.get("/api/stats")
-async def get_api_stats():
-    if MODULES_READY:
-        repo = CompanyRepository()
-        return repo.get_summary_stats()
-    return {"total_tasks": 0, "total_revenue_usd": 0.0, "total_profit_usd": 0.0, "avg_margin": 0.83}
+# ==========================================
+# 4. API エンドポイント
+# ==========================================
 
-
-@app.get("/api/logs")
-async def get_api_logs():
-    if MODULES_READY:
-        repo = CompanyRepository()
-        return repo.get_recent_records(limit=15)
-    return []
-
-
-@app.post("/api/run-loop")
-async def trigger_run_loop():
-    if MODULES_READY:
-        asyncio.create_task(run_autonomous_loop())
-        return {"status": "SUCCESS", "message": "自律成長ループを即時起動しました。"}
-    return {"status": "ERROR", "message": "モジュール未準備のため実行できません。"}
-
-
-@app.post("/mcp/v1/tools/call")
-async def handle_mcp_call(request: Request):
-    data = await request.json()
-    args = data.get("arguments", {})
-    cost_jpy = args.get("estimated_cost_jpy", 10000.0)
-    price_usd = round((cost_jpy / 155.0) * 5.88, 2)
-    return {
-        "status": "QUOTED",
-        "price_usd": price_usd,
-        "message": "Gateway X-OS execution dispatched successfully."
-    }
-
-
-@app.post("/line/webhook")
-async def line_webhook(request: Request, x_line_signature: str = Header(None)):
+@app.get("/", response_class=HTMLResponse)
+async def read_dashboard():
+    """
+    Web管理ダッシュボード表示 (dashboard.html を返却)
+    """
     try:
-        body_bytes = await request.body()
-        channel_secret = os.getenv("LINE_CHANNEL_SECRET", "").strip().strip('"').strip("'")
-
-        # 1. 署名検証
-        if channel_secret and not verify_line_signature(body_bytes, x_line_signature, channel_secret):
-            logger.warning("🚨 [不正アクセス検知] LINE Webhook 署名検証に失敗しました。")
-            raise HTTPException(status_code=401, detail="Invalid signature")
-
-        body = await request.json()
-        events = body.get("events", [])
-        line_bot = LineCeoBot() if MODULES_READY else None
-        gateway = GatewayClient() if MODULES_READY else None
-        repo = CompanyRepository() if MODULES_READY else None
-
-        for event in events:
-            source = event.get("source", {})
-            user_id = source.get("userId")
-            if user_id:
-                logger.info(f"🔑 【LINE User ID】: {user_id}")
-
-            event_type = event.get("type")
-
-            # テキストメッセージ処理（キルスイッチ制御：ストップ / 再開）
-            if event_type == "message" and line_bot and repo:
-                msg_text = event.get("message", {}).get("text", "").strip()
-                if msg_text in ["ストップ", "stop", "STOP", "停止"]:
-                    repo.set_system_state("STOPPED")
-                    line_bot.send_simple_message("🛑 【緊急停止指示】\nシステムを STOPPED 状態に変更しました。\n自律成長ループおよび自動発注を一時停止します。\n再開するには「再開」と送信してください。")
-                elif msg_text in ["再開", "スタート", "start", "START", "active"]:
-                    repo.set_system_state("ACTIVE")
-                    line_bot.send_simple_message("▶️ 【システム再開】\nシステムを ACTIVE 状態に戻しました。\n自律成長ループを再開します。")
-
-            # 1タップ承認 Postback 処理
-            elif event_type == "postback" and line_bot and gateway and repo:
-                postback_data = event.get("postback", "")
-                if isinstance(postback_data, dict):
-                    postback_data = postback_data.get("data", "")
-
-                params = {k: v[0] for k, v in parse_qs(postback_data).items()}
-                action = params.get("action")
-                intent = params.get("intent", "案件")
-
-                if action == "approve":
-                    cost_jpy = float(params.get("cost", 0.0))
-                    price_usd = float(params.get("price", 0.0))
-
-                    proposal = {
-                        "intent": intent,
-                        "estimated_cost_jpy": cost_jpy,
-                        "target_price_usd": price_usd,
-                        "expected_margin": 0.83
-                    }
-                    exec_result = await gateway.call_mcp_execution(proposal)
-                    status = exec_result.get("status", "CEO_APPROVED")
-
-                    if status != "FAILED":
-                        pnl_data = {
-                            "revenue_usd": price_usd,
-                            "cost_jpy": cost_jpy,
-                            "profit_usd": price_usd - (cost_jpy / 155.0),
-                            "margin": 0.83,
-                            "status": status,
-                            "intent": intent
-                        }
-                        repo.save_pnl_record(pnl_data)
-
-                        line_bot.send_simple_message(
-                            f"🎉 CEO承認を受理しました！\n"
-                            f"案件『{intent}』を Gateway X へ発注しました。\n"
-                            f"確定売上: ${price_usd:,.2f}"
-                        )
-                    else:
-                        line_bot.send_simple_message(
-                            f"❌ Gateway X への発注処理に失敗しました。\n"
-                            f"案件: 『{intent}』\n"
-                            f"エラー: {exec_result.get('error_message', '通信エラー')}"
-                        )
-
-                elif action == "redebate":
-                    line_bot.send_simple_message(f"🔄 CEOより軍師AIへ再検討指示を伝達しました: 『{intent}』")
-
-                elif action == "reject":
-                    line_bot.send_simple_message(f"❌ 案件『{intent}』はCEO判断により却下されました。")
-
-        return Response(content="OK", status_code=200)
-    except HTTPException:
-        raise
+        with open("dashboard.html", "r", encoding="utf-8") as f:
+            return HTMLResponse(content=f.read())
     except Exception as e:
-        logger.error(f"Webhook 処理エラー: {e}")
-        return Response(content="Error", status_code=500)
+        return HTMLResponse(content=f"<h1>Company X Dashboard Error</h1><p>{str(e)}</p>", status_code=500)
+
+
+@app.get("/api/v1/health")
+async def health_check():
+    """ヘルスチェック & キルスイッチ状態確認"""
+    kill_status = repository.get_kill_switch_status() or IS_KILLED
+    return {
+        "status": "HEALTHY" if not kill_status else "STOPPED",
+        "kill_switch_active": kill_status,
+        "platform": "FastAPI / Render Cloud",
+        "version": "v3.2.0"
+    }
+
+
+@app.post("/api/v1/task/execute")
+async def handle_client_task(request: TaskExecuteRequest, background_tasks: BackgroundTasks):
+    """
+    外部クライアントからの発注を無人で受付・実行するエンドポイント
+    """
+    global IS_KILLED
+    if IS_KILLED or repository.get_kill_switch_status():
+        raise HTTPException(status_code=530, detail="システムは緊急停止中 (Kill Switch Active) です。")
+
+    candidate = {
+        "task_id": request.task_id,
+        "task_type": request.task_type,
+        "execution_type": request.execution_target,
+        "estimated_price_jpy": request.amount_jpy,
+        "payload": request.payload
+    }
+
+    # 5万円未満なら即時実行、5万円以上はバックグラウンド承認待ち
+    if request.amount_jpy < 50000:
+        res = execute_task_pipeline(candidate)
+        return res
+    else:
+        line_bot.send_approval_card(
+            task_id=request.task_id,
+            title=f"外部リクエスト: {request.task_type}",
+            amount_jpy=request.amount_jpy,
+            reason="クライアントからの直接高額発注"
+        )
+        return {"status": "PENDING_APPROVAL", "message": "¥50,000 以上のため CEO 承認待ちに投入されました。"}
+
+
+@app.post("/webhook/line")
+async def line_webhook(request: Request, x_line_signature: Optional[str] = Header(None)):
+    """
+    LINE Messaging API Webhook (1タップ承認 / キルスイッチ「ストップ」「再開」受領)
+    """
+    global IS_KILLED
+    body = await request.body()
+    body_str = body.decode("utf-8")
+
+    # LINE 署名検証・イベント処理
+    event_data = line_bot.parse_webhook_event(body_str, x_line_signature)
+    if not event_data:
+        return JSONResponse(content={"status": "ok"})
+
+    action = event_data.get("action")
+    user_message = event_data.get("message", "").strip()
+
+    # ミリ秒単位の緊急停止 (キルスイッチ) 分岐
+    if user_message in ["ストップ", "STOP", "stop"]:
+        IS_KILLED = True
+        repository.set_kill_switch_status(True)
+        line_bot.send_push_message("【緊急停止】キルスイッチが作動しました。全自動発注パイプラインを即時停止します。")
+        logger.warning("[KillSwitch] LINE からの指示によりシステムが緊急停止されました。")
+        return JSONResponse(content={"status": "killed"})
+
+    elif user_message in ["再開", "RESTART", "restart"]:
+        IS_KILLED = False
+        repository.set_kill_switch_status(False)
+        line_bot.send_push_message("【再開】キルスイッチを解除しました。自動運用を再開します。")
+        logger.info("[KillSwitch] LINE からの指示によりシステムが再開されました。")
+        return JSONResponse(content={"status": "resumed"})
+
+    # 1タップ Flex Message 承認の受信処理
+    if action == "APPROVE_TASK":
+        task_id = event_data.get("task_id")
+        logger.info(f"[LINE CEO] タスク {task_id} が CEO により承認されました。")
+        
+        # 承認済みタスク情報の取得と実行
+        task_info = repository.get_pending_task(task_id)
+        if task_info:
+            execute_task_pipeline(task_info)
+            line_bot.send_push_message(f"【承認完了】タスク {task_id} の発注・処理を開始しました。")
+
+    return JSONResponse(content={"status": "ok"})
+
+
+# 静的ファイル (dashboard.html 等) のマウント
+if os.path.exists("static"):
+    app.mount("/static", StaticFiles(directory="static"), name="static")
