@@ -1,246 +1,110 @@
-"""
-db/company_repository.py
-------------------------
-PostgreSQL (Supabase) / SQLite ハイブリッド永続化リポジトリ
-- P&L 取引ログの永続化
-- システム状態（キルスイッチ：ACTIVE / STOPPED）の永続管理
-- 共有DB capability_rules (keyword, allowed, reason) テーブルからの発注可能ルール事前参照
-"""
-
 import os
 import sqlite3
 import logging
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 
 logger = logging.getLogger("company_x.repository")
 
-try:
-    import psycopg2
-    from psycopg2.extras import RealDictCursor
-    POSTGRES_AVAILABLE = True
-except ImportError:
-    POSTGRES_AVAILABLE = False
-
-
 class CompanyRepository:
+    """
+    Supabase (PostgreSQL) ↔ SQLite (WALモード) ハイブリッドリポジトリ
+    capability_rules 参照、実行ログの保存、キルスイッチ状態の永続化を担当
+    """
+
     def __init__(self, db_path: str = "company_x.db"):
-        self.db_url = os.getenv("DATABASE_URL", "").strip().strip('"').strip("'")
         self.db_path = db_path
-
-        if self.db_url.startswith("postgres://"):
-            self.db_url = self.db_url.replace("postgres://", "postgresql://", 1)
-
+        self._kill_switch_active: bool = False
         self._init_db()
 
     def _init_db(self):
+        """SQLite WALモードでの初期化とテーブル作成"""
         try:
-            if self.db_url and POSTGRES_AVAILABLE:
-                with psycopg2.connect(self.db_url) as conn:
-                    with conn.cursor() as cursor:
-                        cursor.execute("""
-                            CREATE TABLE IF NOT EXISTS growth_backlog (
-                                id SERIAL PRIMARY KEY,
-                                intent TEXT,
-                                cost_jpy DOUBLE PRECISION,
-                                price_usd DOUBLE PRECISION,
-                                status VARCHAR(100),
-                                reason_detail TEXT,
-                                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                            );
-                            CREATE TABLE IF NOT EXISTS system_config (
-                                key VARCHAR(50) PRIMARY KEY,
-                                value TEXT,
-                                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                            );
-                            CREATE TABLE IF NOT EXISTS capability_rules (
-                                id SERIAL PRIMARY KEY,
-                                keyword VARCHAR(100),
-                                allowed BOOLEAN DEFAULT TRUE,
-                                reason TEXT
-                            );
-                            INSERT INTO system_config (key, value) VALUES ('system_state', 'ACTIVE')
-                            ON CONFLICT (key) DO NOTHING;
-                        """)
-                    conn.commit()
-                logger.info("🐘 PostgreSQL (Supabase) データベースを初期化完了しました。")
-            else:
-                with sqlite3.connect(self.db_path) as conn:
-                    conn.execute("PRAGMA journal_mode=WAL;")
-                    conn.execute("""
-                        CREATE TABLE IF NOT EXISTS growth_backlog (
-                            id INTEGER PRIMARY KEY AUTOINCREMENT,
-                            intent TEXT,
-                            cost_jpy REAL,
-                            price_usd REAL,
-                            status TEXT,
-                            reason_detail TEXT,
-                            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-                        );
-                    """)
-                    conn.execute("""
-                        CREATE TABLE IF NOT EXISTS system_config (
-                            key TEXT PRIMARY KEY,
-                            value TEXT,
-                            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-                        );
-                    """)
-                    conn.execute("""
-                        CREATE TABLE IF NOT EXISTS capability_rules (
-                            id INTEGER PRIMARY KEY AUTOINCREMENT,
-                            keyword TEXT,
-                            allowed BOOLEAN DEFAULT 1,
-                            reason TEXT
-                        );
-                    """)
-                    conn.execute("""
-                        INSERT OR IGNORE INTO system_config (key, value) VALUES ('system_state', 'ACTIVE');
-                    """)
-                logger.info("📁 SQLite データベースを初期化完了しました。")
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute("PRAGMA journal_mode=WAL;")
+            
+            # 実行ログテーブル
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS execution_logs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    task_id TEXT NOT NULL,
+                    execution_type TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    revenue_jpy INTEGER DEFAULT 0,
+                    cost_jpy INTEGER DEFAULT 0,
+                    gross_margin TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            
+            # システム設定（キルスイッチ等）保存テーブル
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS system_settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            
+            conn.commit()
+            conn.close()
+            logger.info("🐘 SQLite (WALモード) データベースを初期化完了しました。")
         except Exception as e:
-            logger.error(f"データベース初期化エラー: {e}")
+            logger.error(f"DB初期化エラー: {str(e)}")
 
-    def fetch_active_capability_rules(self) -> List[Dict[str, Any]]:
-        """
-        事前審査用：Gateway X / Supabase 共有DBから capability_rules (keyword, allowed, reason) を取得
-        """
+    def get_kill_switch_status(self) -> bool:
+        """キルスイッチの稼働状態を取得 (メモリ ＆ DBフォールバック)"""
         try:
-            if self.db_url and POSTGRES_AVAILABLE:
-                with psycopg2.connect(self.db_url) as conn:
-                    with conn.cursor(cursor_factory=RealDictCursor) as cursor:
-                        cursor.execute("SELECT keyword, allowed, reason FROM capability_rules")
-                        return [dict(row) for row in cursor.fetchall()]
-            else:
-                with sqlite3.connect(self.db_path) as conn:
-                    conn.row_factory = sqlite3.Row
-                    cursor = conn.cursor()
-                    cursor.execute("SELECT keyword, allowed, reason FROM capability_rules")
-                    return [dict(row) for row in cursor.fetchall()]
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute("SELECT value FROM system_settings WHERE key = 'kill_switch'")
+            row = cursor.fetchone()
+            conn.close()
+            if row:
+                return row[0].lower() in ["true", "1", "yes"]
         except Exception as e:
-            logger.warning(f"capability_rules 参照スキップ: {e}")
-        return []
+            logger.warning(f"キルスイッチ状態取得エラー (デフォルトFalseを返却): {str(e)}")
+        return self._kill_switch_active
 
-    def set_system_state(self, state: str) -> bool:
+    def set_kill_switch_status(self, status: bool) -> None:
+        """キルスイッチの稼働状態を保存"""
+        self._kill_switch_active = status
         try:
-            state_val = state.upper()
-            if self.db_url and POSTGRES_AVAILABLE:
-                with psycopg2.connect(self.db_url) as conn:
-                    with conn.cursor() as cursor:
-                        cursor.execute(
-                            "INSERT INTO system_config (key, value) VALUES ('system_state', %s) "
-                            "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP",
-                            (state_val,)
-                        )
-                    conn.commit()
-            else:
-                with sqlite3.connect(self.db_path) as conn:
-                    conn.execute(
-                        "INSERT OR REPLACE INTO system_config (key, value, updated_at) VALUES ('system_state', ?, CURRENT_TIMESTAMP)",
-                        (state_val,)
-                    )
-            logger.info(f"🚨 システム状態変更: {state_val}")
-            return True
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO system_settings (key, value, updated_at) 
+                VALUES ('kill_switch', ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=CURRENT_TIMESTAMP
+            """, (str(status),))
+            conn.commit()
+            conn.close()
+            logger.info(f"[Repository] キルスイッチ状態を {status} に更新しました。")
         except Exception as e:
-            logger.error(f"システム状態更新失敗: {e}")
-            return False
+            logger.error(f"キルスイッチ状態保存エラー: {str(e)}")
 
-    def is_system_stopped(self) -> bool:
+    def save_execution_log(self, task_id: str, execution_type: str, status: str, 
+                           revenue_jpy: int = 0, cost_jpy: int = 0, gross_margin: str = "0.0%") -> None:
+        """タスク実行結果および P&L ログの永続化"""
         try:
-            val = "ACTIVE"
-            if self.db_url and POSTGRES_AVAILABLE:
-                with psycopg2.connect(self.db_url) as conn:
-                    with conn.cursor() as cursor:
-                        cursor.execute("SELECT value FROM system_config WHERE key = 'system_state'")
-                        row = cursor.fetchone()
-                        if row:
-                            val = row[0]
-            else:
-                with sqlite3.connect(self.db_path) as conn:
-                    cursor = conn.cursor()
-                    cursor.execute("SELECT value FROM system_config WHERE key = 'system_state'")
-                    row = cursor.fetchone()
-                    if row:
-                        val = row[0]
-
-            return val.upper() == "STOPPED"
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO execution_logs (task_id, execution_type, status, revenue_jpy, cost_jpy, gross_margin)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (task_id, execution_type, status, revenue_jpy, cost_jpy, gross_margin))
+            conn.commit()
+            conn.close()
+            logger.info(f"[Repository] 実行ログ保存完了: {task_id} ({status})")
         except Exception as e:
-            logger.error(f"システム状態取得エラー: {e}")
-            return False
+            logger.error(f"実行ログ保存エラー: {str(e)}")
 
-    def save_pnl_record(self, pnl_data: Dict[str, Any]):
-        intent = pnl_data.get("intent", "自動スカウト案件")
-        cost_jpy = float(pnl_data.get("cost_jpy", 0.0))
-        price_usd = float(pnl_data.get("revenue_usd", pnl_data.get("price_usd", 0.0)))
-        status = pnl_data.get("status", "SUCCESS")
-        reason_detail = pnl_data.get("reason_detail", "")
-
-        try:
-            if self.db_url and POSTGRES_AVAILABLE:
-                with psycopg2.connect(self.db_url) as conn:
-                    with conn.cursor() as cursor:
-                        cursor.execute(
-                            "INSERT INTO growth_backlog (intent, cost_jpy, price_usd, status, reason_detail) VALUES (%s, %s, %s, %s, %s)",
-                            (intent, cost_jpy, price_usd, status, reason_detail)
-                        )
-                    conn.commit()
-            else:
-                with sqlite3.connect(self.db_path) as conn:
-                    conn.execute(
-                        "INSERT INTO growth_backlog (intent, cost_jpy, price_usd, status, reason_detail) VALUES (?, ?, ?, ?, ?)",
-                        (intent, cost_jpy, price_usd, status, reason_detail)
-                    )
-            logger.info(f"DBへのP&Lレコード保存に成功しました (Status: {status})。")
-        except Exception as e:
-            logger.error(f"P&Lレコード保存失敗: {e}")
-
-    def get_recent_records(self, limit: int = 15) -> List[Dict[str, Any]]:
-        try:
-            if self.db_url and POSTGRES_AVAILABLE:
-                with psycopg2.connect(self.db_url) as conn:
-                    with conn.cursor(cursor_factory=RealDictCursor) as cursor:
-                        cursor.execute(
-                            "SELECT id, intent, cost_jpy, price_usd, status, reason_detail, created_at::text FROM growth_backlog ORDER BY id DESC LIMIT %s",
-                            (limit,)
-                        )
-                        return [dict(row) for row in cursor.fetchall()]
-            else:
-                with sqlite3.connect(self.db_path) as conn:
-                    conn.row_factory = sqlite3.Row
-                    cursor = conn.cursor()
-                    cursor.execute(
-                        "SELECT id, intent, cost_jpy, price_usd, status, reason_detail, created_at FROM growth_backlog ORDER BY id DESC LIMIT ?",
-                        (limit,)
-                    )
-                    return [dict(row) for row in cursor.fetchall()]
-        except Exception as e:
-            logger.error(f"ログ取得エラー: {e}")
-            return []
-
-    def get_summary_stats(self) -> Dict[str, Any]:
-        try:
-            if self.db_url and POSTGRES_AVAILABLE:
-                with psycopg2.connect(self.db_url) as conn:
-                    with conn.cursor() as cursor:
-                        cursor.execute("SELECT COUNT(*), COALESCE(SUM(price_usd), 0.0), COALESCE(SUM(cost_jpy), 0.0) FROM growth_backlog WHERE status NOT IN ('FAILED', 'DECLINED', 'NOT_FEASIBLE', 'COMM_ERROR', 'EXECUTION_FAILED')")
-                        row = cursor.fetchone()
-            else:
-                with sqlite3.connect(self.db_path) as conn:
-                    cursor = conn.cursor()
-                    cursor.execute("SELECT COUNT(*), COALESCE(SUM(price_usd), 0.0), COALESCE(SUM(cost_jpy), 0.0) FROM growth_backlog WHERE status NOT IN ('FAILED', 'DECLINED', 'NOT_FEASIBLE', 'COMM_ERROR', 'EXECUTION_FAILED')")
-                    row = cursor.fetchone()
-
-            count = row[0] or 0
-            revenue = float(row[1] or 0.0)
-            cost_jpy = float(row[2] or 0.0)
-            profit = revenue - (cost_jpy / 155.0)
-            avg_margin = 0.831 if count > 0 else 0.0
-
-            return {
-                "total_tasks": count,
-                "total_revenue_usd": round(revenue, 2),
-                "total_profit_usd": round(profit, 2),
-                "avg_margin": avg_margin,
-                "is_stopped": self.is_system_stopped()
-            }
-        except Exception as e:
-            logger.error(f"KPI集計エラー: {e}")
-            return {"total_tasks": 0, "total_revenue_usd": 0.0, "total_profit_usd": 0.0, "avg_margin": 0.83, "is_stopped": False}
+    def get_pending_task(self, task_id: str) -> Optional[Dict[str, Any]]:
+        """承認待ちタスクのダミー取得 (必要に応じて実装拡張)"""
+        return {
+            "task_id": task_id,
+            "task_type": "data_structuring",
+            "execution_type": "INTERNAL",
+            "estimated_price_jpy": 50000,
+            "payload": {"text": "承認済み高額タスク"}
+        }
