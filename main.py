@@ -28,7 +28,7 @@ logger = logging.getLogger("company_x.main")
 
 # システムコンポーネントの初期化
 repository = CompanyRepository()
-scout_engine = ScoutEngine(repository=repository)
+scout_engine = ScoutEngine()
 debate_governance = DebateGovernance()
 gateway_client = GatewayClient()
 internal_executor = InternalExecutor()
