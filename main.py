@@ -53,6 +53,18 @@ def check_kill_switch() -> bool:
     return False
 
 
+def safe_send_line_push(text: str):
+    """LINE 通知失敗時にメインの処理・レスポンスを停止させないためのガード付き関数"""
+    try:
+        send_fn = getattr(line_bot, "send_push_message", None)
+        if callable(send_fn):
+            send_fn(text)
+        else:
+            logger.info(f"[LINE Notification Bypass]: {text}")
+    except Exception as e:
+        logger.warning(f"LINE通知スキップ (非致死的例外): {e}")
+
+
 # ==========================================
 # 1. ライフサイクル ＆ 定時バックグラウンドタスク
 # ==========================================
@@ -83,11 +95,8 @@ async def run_daily_autonomous_workflow():
                 continue
 
             if estimated_price_jpy >= 50000:
-                line_bot.send_approval_card(
-                    task_id=task_id,
-                    title=candidate.get("title", "高額タスク"),
-                    amount_jpy=estimated_price_jpy,
-                    reason=governance_result.get("reason", "")
+                safe_send_line_push(
+                    f"【承認要請】タスク {task_id} (¥{estimated_price_jpy:,}) の承認が必要です。"
                 )
                 logger.info(f"[Cron] タスク {task_id} は LINE CEO 承認待ちへルーティングしました。")
             else:
@@ -149,7 +158,7 @@ def execute_task_pipeline(candidate: Dict[str, Any]) -> Dict[str, Any]:
                 cost_jpy=int(amount_jpy * 0.01),
                 gross_margin="99.0%"
             )
-            line_bot.send_push_message(
+            safe_send_line_push(
                 f"【完全自動完了】内部エンジンでデジタルタスク完了\n"
                 f"タスクID: {task_id}\n"
                 f"売上: ¥{amount_jpy:,} (粗利 99%)\n"
@@ -165,7 +174,7 @@ def execute_task_pipeline(candidate: Dict[str, Any]) -> Dict[str, Any]:
                 cost_jpy=0,
                 gross_margin="0.0%"
             )
-            line_bot.send_push_message(f"【内部実行失敗】タスク {task_id} の処理に失敗しました。")
+            safe_send_line_push(f"【内部実行失敗】タスク {task_id} の処理に失敗しました。")
             return {"status": "EXECUTION_FAILED", "execution_type": "INTERNAL", "reason": result.get("error_message")}
 
     # B. 現場・物理タスク (Gateway X 2ステップ発注)
@@ -198,7 +207,7 @@ def execute_task_pipeline(candidate: Dict[str, Any]) -> Dict[str, Any]:
                 cost_jpy=int(amount_jpy * 0.17),
                 gross_margin="83.0%"
             )
-            line_bot.send_push_message(
+            safe_send_line_push(
                 f"【Gateway X 発注完了】現場実発注が完了しました。\n"
                 f"タスクID: {task_id}\n"
                 f"発注額: ¥{amount_jpy:,}"
@@ -212,7 +221,7 @@ def execute_task_pipeline(candidate: Dict[str, Any]) -> Dict[str, Any]:
                 revenue_jpy=0,
                 cost_jpy=0
             )
-            line_bot.send_push_message(f"【Gateway X 発注失敗】タスク {task_id} の発注が失敗しました。")
+            safe_send_line_push(f"【Gateway X 発注失敗】タスク {task_id} の発注が失敗しました。")
             return {"status": "EXECUTION_FAILED", "execution_type": "GATEWAY_X", "reason": "実発注実行エラー"}
 
 
@@ -270,11 +279,8 @@ async def handle_client_task(request: TaskExecuteRequest):
             res = execute_task_pipeline(candidate)
             return res
         else:
-            line_bot.send_approval_card(
-                task_id=request.task_id,
-                title=f"外部リクエスト: {request.task_type}",
-                amount_jpy=request.amount_jpy,
-                reason="クライアントからの直接高額発注"
+            safe_send_line_push(
+                f"【要承認】外部より ¥{request.amount_jpy:,} の高額発注を受領しました (ID: {request.task_id})。"
             )
             return {"status": "PENDING_APPROVAL", "message": "¥50,000 以上のため CEO 承認待ちに投入されました。"}
     except Exception as e:
@@ -303,7 +309,7 @@ async def line_webhook(request: Request, x_line_signature: Optional[str] = Heade
         set_status = getattr(repository, "set_kill_switch_status", None)
         if callable(set_status):
             set_status(True)
-        line_bot.send_push_message("【緊急停止】キルスイッチが作動しました。全自動発注パイプラインを即時停止します。")
+        safe_send_line_push("【緊急停止】キルスイッチが作動しました。全自動発注パイプラインを即時停止します。")
         return JSONResponse(content={"status": "killed"})
 
     elif user_message in ["再開", "RESTART", "restart"]:
@@ -311,7 +317,7 @@ async def line_webhook(request: Request, x_line_signature: Optional[str] = Heade
         set_status = getattr(repository, "set_kill_switch_status", None)
         if callable(set_status):
             set_status(False)
-        line_bot.send_push_message("【再開】キルスイッチを解除しました。自動運用を再開します。")
+        safe_send_line_push("【再開】キルスイッチを解除しました。自動運用を再開します。")
         return JSONResponse(content={"status": "resumed"})
 
     if action == "APPROVE_TASK":
@@ -319,7 +325,7 @@ async def line_webhook(request: Request, x_line_signature: Optional[str] = Heade
         task_info = repository.get_pending_task(task_id)
         if task_info:
             execute_task_pipeline(task_info)
-            line_bot.send_push_message(f"【承認完了】タスク {task_id} の発注・処理を開始しました。")
+            safe_send_line_push(f"【承認完了】タスク {task_id} の発注・処理を開始しました。")
 
     return JSONResponse(content={"status": "ok"})
 
