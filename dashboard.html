@@ -1,527 +1,99 @@
 <!DOCTYPE html>
-<html lang="ja" class="dark">
+<html lang="ja">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>カンパニーX | Gateway X-OS AIダッシュボード</title>
-    <!-- Tailwind CSS CDN -->
-    <script src="https://cdn.tailwindcss.com"></script>
-    <!-- Chart.js CDN -->
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-    <!-- FontAwesome Icons -->
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
-    <!-- Google Fonts -->
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-    
-    <script>
-        tailwind.config = {
-            darkMode: 'class',
-            theme: {
-                extend: {
-                    colors: {
-                        brand: {
-                            50: '#f0fdf4',
-                            500: '#22c55e',
-                            600: '#16a34a',
-                            900: '#14532d',
-                        },
-                        darkbg: '#0B0F19',
-                        cardbg: '#111827',
-                        borderbg: '#1F2937'
-                    },
-                    fontFamily: {
-                        sans: ['Inter', 'sans-serif'],
-                    }
-                }
-            }
-        }
-    </script>
-    <style>
-        body {
-            background-color: #0B0F19;
-            color: #E5E7EB;
-            font-family: 'Inter', sans-serif;
-        }
-        /* Custom Scrollbar */
-        ::-webkit-scrollbar {
-            width: 6px;
-            height: 6px;
-        }
-        ::-webkit-scrollbar-track {
-            background: #0B0F19;
-        }
-        ::-webkit-scrollbar-thumb {
-            background: #374151;
-            border-radius: 3px;
-        }
-        ::-webkit-scrollbar-thumb:hover {
-            background: #4B5563;
-        }
-    </style>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Company X - Dual Engine Autonomous Dashboard</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0f172a; color: #f8fafc; padding: 24px; }
+    .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px; border-bottom: 1px solid #334155; padding-bottom: 16px; }
+    .title { font-size: 20px; font-weight: bold; color: #38bdf8; }
+    .status-badge { padding: 6px 12px; border-radius: 9999px; font-size: 12px; font-weight: bold; background: #065f46; color: #34d399; }
+    .kpi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; margin-bottom: 24px; }
+    .kpi-card { background: #1e293b; padding: 20px; border-radius: 12px; border: 1px solid #334155; }
+    .kpi-card.internal { border-left: 4px solid #10b981; }
+    .kpi-card.gateway { border-left: 4px solid #3b82f6; }
+    .kpi-card.total { border-left: 4px solid #f59e0b; }
+    .kpi-title { font-size: 13px; color: #94a3b8; margin-bottom: 8px; font-weight: 600; }
+    .kpi-value { font-size: 26px; font-weight: 800; margin-bottom: 6px; }
+    .kpi-sub { font-size: 12px; color: #64748b; }
+    .refresh-btn { background: #0284c7; color: #fff; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer; font-weight: 600; }
+    .refresh-btn:hover { background: #0369a1; }
+  </style>
 </head>
-<body class="min-h-screen flex flex-col p-4 md:p-6 antialiased">
-    <!-- Header Bar -->
-    <header class="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-6 pb-4 border-b border-gray-800">
-        <div class="flex items-center gap-3">
-            <div class="w-10 h-10 rounded-xl bg-gradient-to-tr from-emerald-500 to-green-300 flex items-center justify-center text-black font-extrabold text-xl shadow-lg shadow-emerald-500/20">
-                X
-            </div>
-            <div>
-                <div class="flex items-center gap-2">
-                    <h1 class="text-xl font-bold text-white tracking-wide">カンパニーX</h1>
-                    <span class="bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 text-[10px] px-2 py-0.5 rounded-full font-mono">Gateway X-OS v3.2</span>
-                </div>
-                <p class="text-xs text-gray-400">完全自律型 AI 成長エンジン & ガバナンスダッシュボード</p>
-            </div>
-        </div>
+<body>
 
-        <div class="flex items-center gap-3 w-full md:w-auto justify-end">
-            <div class="hidden sm:flex items-center gap-2 bg-gray-900 border border-gray-800 px-3 py-1.5 rounded-lg text-xs text-gray-300">
-                <span class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
-                <span>CRON: 毎朝 09:00 JST</span>
-            </div>
-            <button id="runLoopBtn" onclick="triggerAutonomousLoop()" class="w-full sm:w-auto bg-gradient-to-r from-emerald-500 to-green-600 hover:from-emerald-600 hover:to-green-700 text-white px-4 py-2 rounded-xl font-medium text-xs md:text-sm flex items-center justify-center gap-2 transition duration-200 shadow-lg shadow-emerald-500/20 active:scale-95">
-                <i class="fa-solid fa-play text-xs"></i>
-                <span>自律ループ即時手動実行</span>
-            </button>
-        </div>
-    </header>
+  <div class="header">
+    <div class="title">⚡ COMPANY X | 二輪駆動 リアルタイム P&L Dashboard</div>
+    <div>
+      <span id="sys-status" class="status-badge">HEALTHY (v3.2)</span>
+      <button class="refresh-btn" onclick="fetchStats()">更新</button>
+    </div>
+  </div>
 
-    <!-- KPI Summary Grid -->
-    <section class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
-        <!-- Revenue Card -->
-        <div class="bg-gray-900/80 border border-gray-800 rounded-2xl p-4 flex flex-col justify-between relative overflow-hidden backdrop-blur">
-            <div class="flex justify-between items-start">
-                <div>
-                    <p class="text-xs text-gray-400 font-medium">当月累計売上</p>
-                    <h3 id="kpiRevenue" class="text-2xl font-bold text-white mt-1 font-mono">$0.00</h3>
-                </div>
-                <div class="w-10 h-10 rounded-xl bg-blue-500/10 border border-blue-500/20 text-blue-400 flex items-center justify-center">
-                    <i class="fa-solid fa-dollar-sign text-lg"></i>
-                </div>
-            </div>
-            <div class="mt-3 flex items-center text-[11px] text-emerald-400 font-medium">
-                <i class="fa-solid fa-arrow-trend-up mr-1"></i>
-                <span>前月比 +24.8% 成長中</span>
-            </div>
-        </div>
+  <!-- KPI 分離カード -->
+  <div class="kpi-grid">
+    <!-- 1. 内部デジタル処理 (99%) -->
+    <div class="kpi-card internal">
+      <div class="kpi-title">💻 内部デジタルタスク (粗利 99.0%)</div>
+      <div class="kpi-value" style="color: #10b981;" id="internal-revenue">¥0</div>
+      <div class="kpi-sub">
+        純利益: <strong id="internal-profit" style="color: #f8fafc;">¥0</strong> | 完了: <span id="internal-count">0</span> 件
+      </div>
+    </div>
 
-        <!-- Profit Card -->
-        <div class="bg-gray-900/80 border border-gray-800 rounded-2xl p-4 flex flex-col justify-between relative overflow-hidden backdrop-blur">
-            <div class="flex justify-between items-start">
-                <div>
-                    <p class="text-xs text-gray-400 font-medium">純利益 ($ USD)</p>
-                    <h3 id="kpiProfit" class="text-2xl font-bold text-emerald-400 mt-1 font-mono">$0.00</h3>
-                </div>
-                <div class="w-10 h-10 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 flex items-center justify-center">
-                    <i class="fa-solid fa-sack-dollar text-lg"></i>
-                </div>
-            </div>
-            <div class="mt-3 flex items-center text-[11px] text-gray-400">
-                <i class="fa-solid fa-shield-halved text-emerald-400 mr-1"></i>
-                <span>83% 利益率目標達成中</span>
-            </div>
-        </div>
+    <!-- 2. Gateway X 現場発注 (83%) -->
+    <div class="kpi-card gateway">
+      <div class="kpi-title">🚚 Gateway X 現場発注 (粗利 83.0%)</div>
+      <div class="kpi-value" style="color: #3b82f6;" id="gateway-revenue">¥0</div>
+      <div class="kpi-sub">
+        純利益: <strong id="gateway-profit" style="color: #f8fafc;">¥0</strong> | 完了: <span id="gateway-count">0</span> 件
+      </div>
+    </div>
 
-        <!-- Margin Card -->
-        <div class="bg-gray-900/80 border border-gray-800 rounded-2xl p-4 flex flex-col justify-between relative overflow-hidden backdrop-blur">
-            <div class="flex justify-between items-start">
-                <div>
-                    <p class="text-xs text-gray-400 font-medium">平均粗利益率</p>
-                    <h3 id="kpiMargin" class="text-2xl font-bold text-purple-400 mt-1 font-mono">0.0%</h3>
-                </div>
-                <div class="w-10 h-10 rounded-xl bg-purple-500/10 border border-purple-500/20 text-purple-400 flex items-center justify-center">
-                    <i class="fa-solid fa-chart-pie text-lg"></i>
-                </div>
-            </div>
-            <div class="mt-3 flex items-center text-[11px] text-gray-400">
-                <span>ガバナンス下限閾値: 83.0%</span>
-            </div>
-        </div>
+    <!-- 3. 合計収益 -->
+    <div class="kpi-card total">
+      <div class="kpi-title">📈 総合受発注実績 (Total P&L)</div>
+      <div class="kpi-value" style="color: #f59e0b;" id="total-revenue">¥0</div>
+      <div class="kpi-sub">
+        総純利益: <strong id="total-profit" style="color: #f8fafc;">¥0</strong> | 累計件数: <span id="total-count">0</span> 件
+      </div>
+    </div>
+  </div>
 
-        <!-- Task Count Card -->
-        <div class="bg-gray-900/80 border border-gray-800 rounded-2xl p-4 flex flex-col justify-between relative overflow-hidden backdrop-blur">
-            <div class="flex justify-between items-start">
-                <div>
-                    <p class="text-xs text-gray-400 font-medium">発注成立タスク数</p>
-                    <h3 id="kpiTasks" class="text-2xl font-bold text-amber-400 mt-1 font-mono">0 件</h3>
-                </div>
-                <div class="w-10 h-10 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-400 flex items-center justify-center">
-                    <i class="fa-solid fa-gears text-lg"></i>
-                </div>
-            </div>
-            <div class="mt-3 flex items-center text-[11px] text-gray-400">
-                <i class="fa-brands fa-line text-green-500 mr-1"></i>
-                <span>LINE CEO 1タップ承認連携済</span>
-            </div>
-        </div>
-    </section>
-
-    <!-- Middle Section: P&L Chart & Governance Status -->
-    <section class="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6">
-        <!-- P&L Chart -->
-        <div class="lg:col-span-2 bg-gray-900/80 border border-gray-800 rounded-2xl p-5 flex flex-col justify-between">
-            <div class="flex justify-between items-center mb-4">
-                <div>
-                    <h2 class="text-sm font-semibold text-white flex items-center gap-2">
-                        <i class="fa-solid fa-chart-line text-emerald-400"></i>
-                        <span>日次 P&L 推移 (売上 vs 純利益)</span>
-                    </h2>
-                    <p class="text-xs text-gray-400">直近の自律成長AIによる損益トラッキング</p>
-                </div>
-                <div class="flex gap-1 bg-gray-800/60 p-1 rounded-lg border border-gray-700/50">
-                    <button class="px-2.5 py-1 text-[11px] font-medium rounded-md bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">日次</button>
-                    <button class="px-2.5 py-1 text-[11px] font-medium rounded-md text-gray-400 hover:text-gray-200">週次</button>
-                </div>
-            </div>
-            <div class="h-64 w-full relative">
-                <canvas id="pnlChart"></canvas>
-            </div>
-        </div>
-
-        <!-- Governance & Architecture Card -->
-        <div class="bg-gray-900/80 border border-gray-800 rounded-2xl p-5 flex flex-col justify-between">
-            <div>
-                <h2 class="text-sm font-semibold text-white flex items-center gap-2 mb-3">
-                    <i class="fa-solid fa-network-wired text-purple-400"></i>
-                    <span>ガバナンス & アーキテクチャ状態</span>
-                </h2>
-                
-                <div class="space-y-3">
-                    <div class="flex items-center justify-between p-2.5 bg-gray-800/40 rounded-xl border border-gray-800">
-                        <div class="flex items-center gap-2.5">
-                            <i class="fa-solid fa-compass text-blue-400 text-xs"></i>
-                            <span class="text-xs text-gray-300 font-medium">Scout Engine (Qiita/RSS)</span>
-                        </div>
-                        <span class="text-[10px] bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 px-2 py-0.5 rounded font-mono">Active</span>
-                    </div>
-
-                    <div class="flex items-center justify-between p-2.5 bg-gray-800/40 rounded-xl border border-gray-800">
-                        <div class="flex items-center gap-2.5">
-                            <i class="fa-solid fa-brain text-purple-400 text-xs"></i>
-                            <span class="text-xs text-gray-300 font-medium">Gemini (主将プロポーザル)</span>
-                        </div>
-                        <span class="text-[10px] bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 px-2 py-0.5 rounded font-mono">Ready</span>
-                    </div>
-
-                    <div class="flex items-center justify-between p-2.5 bg-gray-800/40 rounded-xl border border-gray-800">
-                        <div class="flex items-center gap-2.5">
-                            <i class="fa-solid fa-chess-knight text-amber-400 text-xs"></i>
-                            <span class="text-xs text-gray-300 font-medium">DeepSeek-R1 (軍師批判役)</span>
-                        </div>
-                        <span class="text-[10px] bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 px-2 py-0.5 rounded font-mono">Ready</span>
-                    </div>
-
-                    <div class="flex items-center justify-between p-2.5 bg-gray-800/40 rounded-xl border border-gray-800">
-                        <div class="flex items-center gap-2.5">
-                            <i class="fa-brands fa-line text-green-500 text-xs"></i>
-                            <span class="text-xs text-gray-300 font-medium">LINE CEO Bot (Flex 1-Tap)</span>
-                        </div>
-                        <span class="text-[10px] bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 px-2 py-0.5 rounded font-mono">Connected</span>
-                    </div>
-
-                    <div class="flex items-center justify-between p-2.5 bg-gray-800/40 rounded-xl border border-gray-800">
-                        <div class="flex items-center gap-2.5">
-                            <i class="fa-solid fa-database text-cyan-400 text-xs"></i>
-                            <span class="text-xs text-gray-300 font-medium">SQLite Repository (WAL)</span>
-                        </div>
-                        <span class="text-[10px] bg-gray-700 text-gray-300 border border-gray-600 px-2 py-0.5 rounded font-mono">pnl_records</span>
-                    </div>
-                </div>
-            </div>
-
-            <div class="mt-4 p-3 bg-amber-500/10 border border-amber-500/20 rounded-xl">
-                <div class="flex items-start gap-2">
-                    <i class="fa-solid fa-triangle-exclamation text-amber-400 text-xs mt-0.5"></i>
-                    <p class="text-[11px] text-amber-300/90 leading-tight">
-                        <strong class="font-semibold text-amber-300">ガバナンスルール適用中:</strong> 粗利益率 83% 未満提案は自動修正またはサーキットブレーカー（安全側小口案）を採択。¥50,000 超高額案件は LINE の 1タップ承認へ自動分岐。
-                    </p>
-                </div>
-            </div>
-        </div>
-    </section>
-
-    <!-- Bottom Section: Debate Logs Table & AI Strategy Advisor -->
-    <section class="grid grid-cols-1 lg:grid-cols-3 gap-6 flex-1">
-        <!-- Logs Table -->
-        <div class="lg:col-span-2 bg-gray-900/80 border border-gray-800 rounded-2xl p-5 flex flex-col justify-between">
-            <div>
-                <div class="flex justify-between items-center mb-4">
-                    <div>
-                        <h2 class="text-sm font-semibold text-white flex items-center gap-2">
-                            <i class="fa-solid fa-list-check text-blue-400"></i>
-                            <span>スカウト & 2ラウンドAIディベートログ</span>
-                        </h2>
-                        <p class="text-xs text-gray-400">自動生成された案件と AI 軍師の意思決定プロセス</p>
-                    </div>
-                    <span class="text-[11px] text-gray-400">自動更新: <span class="text-emerald-400 font-semibold">ON</span></span>
-                </div>
-
-                <div class="overflow-x-auto">
-                    <table class="w-full text-left text-xs border-collapse">
-                        <thead>
-                            <tr class="border-b border-gray-800 text-gray-400 font-medium bg-gray-800/30">
-                                <th class="p-3 rounded-l-lg">日時</th>
-                                <th class="p-3">スカウト案件名</th>
-                                <th class="p-3">見積コスト</th>
-                                <th class="p-3">目標売上</th>
-                                <th class="p-3">ディベート結果</th>
-                                <th class="p-3 rounded-r-lg">CEO承認</th>
-                            </tr>
-                        </thead>
-                        <tbody id="debateLogsTable" class="divide-y divide-gray-800/60 font-mono">
-                            <!-- JS Dynically populated -->
-                            <tr>
-                                <td colspan="6" class="p-4 text-center text-gray-500">
-                                    <i class="fa-solid fa-spinner fa-spin mr-2"></i>リアルタイムデータ読み込み中...
-                                </td>
-                            </tr>
-                        </tbody>
-                    </table>
-                </div>
-            </div>
-        </div>
-
-        <!-- AI CEO Advisor Card -->
-        <div class="bg-gray-900/80 border border-gray-800 rounded-2xl p-5 flex flex-col justify-between">
-            <div>
-                <h2 class="text-sm font-semibold text-white flex items-center gap-2 mb-2">
-                    <i class="fa-solid fa-wand-magic-sparkles text-emerald-400"></i>
-                    <span>AI CEO コンサルタント (Gemini 3 Flash)</span>
-                </h2>
-                <p class="text-xs text-gray-400 mb-4">現在の財務P&Lデータに基づきリアルタイムの自律成長アドバイスを生成します。</p>
-
-                <div id="advisorOutput" class="bg-gray-950/80 border border-gray-800 rounded-xl p-4 text-xs text-gray-300 min-h-[160px] leading-relaxed relative">
-                    <span class="text-gray-500 italic">「成長戦略を生成」ボタンを押すと、Gemini 3 Flash が現在の事業損益と市場トレンドを分析して最適な事業拡大方針を表示します。</span>
-                </div>
-            </div>
-
-            <button onclick="generateGeminiAdvice()" class="mt-4 w-full bg-emerald-500/10 border border-emerald-500/30 hover:bg-emerald-500/20 text-emerald-400 py-2.5 rounded-xl text-xs font-semibold flex items-center justify-center gap-2 transition duration-200">
-                <i class="fa-solid fa-bolt text-xs"></i>
-                <span>Gemini 成長戦略アドバイス生成</span>
-            </button>
-        </div>
-    </section>
-
-    <!-- Toast Notification Container -->
-    <div id="toastContainer" class="fixed bottom-5 right-5 z-50 flex flex-col gap-2"></div>
-
-    <script>
-        let pnlChartInstance = null;
-
-        // Initialize Chart.js Instance
-        function initChart() {
-            const ctx = document.getElementById('pnlChart').getContext('2d');
-            pnlChartInstance = new Chart(ctx, {
-                type: 'line',
-                data: {
-                    labels: ['データ取得中...'],
-                    datasets: [
-                        {
-                            label: '売上 ($ USD)',
-                            data: [0],
-                            borderColor: '#22c55e',
-                            backgroundColor: 'rgba(34, 197, 94, 0.1)',
-                            borderWidth: 2,
-                            fill: true,
-                            tension: 0.35,
-                            pointRadius: 4,
-                            pointHoverRadius: 6
-                        },
-                        {
-                            label: '純利益 ($ USD)',
-                            data: [0],
-                            borderColor: '#3b82f6',
-                            borderWidth: 2,
-                            borderDash: [4, 4],
-                            fill: false,
-                            tension: 0.35,
-                            pointRadius: 4
-                        }
-                    ]
-                },
-                options: {
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    plugins: {
-                        legend: {
-                            labels: { color: '#9ca3af', font: { family: 'Inter', size: 11 } }
-                        }
-                    },
-                    scales: {
-                        x: {
-                            grid: { color: 'rgba(255,255,255,0.05)' },
-                            ticks: { color: '#6b7280', font: { family: 'Inter', size: 11 } }
-                        },
-                        y: {
-                            grid: { color: 'rgba(255,255,255,0.05)' },
-                            ticks: { color: '#6b7280', font: { family: 'Inter', size: 11 } }
-                        }
-                    }
-                }
-            });
+  <script>
+    async function fetchStats() {
+      try {
+        const res = await fetch('/api/v1/dashboard/stats');
+        const json = await res.json();
+        
+        if (json.status === 'SUCCESS') {
+          const d = json.data;
+          
+          // 内部デジタル
+          document.getElementById('internal-revenue').innerText = '¥' + d.internal.revenue.toLocaleString();
+          document.getElementById('internal-profit').innerText = '¥' + d.internal.profit.toLocaleString();
+          document.getElementById('internal-count').innerText = d.internal.count;
+          
+          // Gateway X
+          document.getElementById('gateway-revenue').innerText = '¥' + d.gateway.revenue.toLocaleString();
+          document.getElementById('gateway-profit').innerText = '¥' + d.gateway.profit.toLocaleString();
+          document.getElementById('gateway-count').innerText = d.gateway.count;
+          
+          // 合計
+          document.getElementById('total-revenue').innerText = '¥' + d.total.revenue.toLocaleString();
+          document.getElementById('total-profit').innerText = '¥' + d.total.profit.toLocaleString();
+          document.getElementById('total-count').innerText = d.total.count;
         }
+      } catch (e) {
+        console.error('Stats取得エラー:', e);
+      }
+    }
 
-        // Fetch Real DB stats and logs from FastAPI backend
-        async function fetchRealDashboardData() {
-            try {
-                // 1. Fetch Real KPI Stats
-                const statsRes = await fetch('/api/stats');
-                if (statsRes.ok) {
-                    const stats = await statsRes.json();
-                    document.getElementById('kpiRevenue').innerText = `$${(stats.total_revenue_usd || 0).toLocaleString('en-US', {minimumFractionDigits: 2})}`;
-                    document.getElementById('kpiProfit').innerText = `$${(stats.total_profit_usd || 0).toLocaleString('en-US', {minimumFractionDigits: 2})}`;
-                    document.getElementById('kpiMargin').innerText = `${((stats.avg_margin || 0.83) * 100).toFixed(1)}%`;
-                    document.getElementById('kpiTasks').innerText = `${stats.total_tasks || 0} 件`;
-                }
-
-                // 2. Fetch Real Logs from DB
-                const logsRes = await fetch('/api/logs');
-                if (logsRes.ok) {
-                    const logs = await logsRes.json();
-                    renderLogsTable(logs);
-                    updateChartWithLogs(logs);
-                }
-            } catch (err) {
-                console.warn("DBデータ取得時のフォールバック:", err);
-            }
-        }
-
-        function renderLogsTable(records) {
-            const tbody = document.getElementById('debateLogsTable');
-            tbody.innerHTML = '';
-
-            if (!records || records.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="6" class="p-4 text-center text-gray-500">DBにまだ記録がありません。「自律ループ即時手動実行」ボタンを押してください。</td></tr>';
-                return;
-            }
-
-            records.forEach(r => {
-                const tr = document.createElement('tr');
-                tr.className = 'hover:bg-gray-800/40 transition duration-150';
-
-                const createdTime = r.created_at ? r.created_at.substring(0, 16) : '直近';
-                const taskName = r.intent || '案件スカウト';
-                const cost = r.cost_jpy || 0;
-                const revenue = r.price_usd || 0;
-                const statusStr = r.status || 'SUCCESS';
-
-                let statusBadge = '<span class="bg-green-500/20 text-green-400 border border-green-500/30 px-2 py-0.5 rounded text-[10px]">R1 承認完了</span>';
-                if (statusStr.includes('CIRCUIT')) {
-                    statusBadge = '<span class="bg-amber-500/20 text-amber-400 border border-amber-500/30 px-2 py-0.5 rounded text-[10px]">サーキットブレーカー</span>';
-                } else if (statusStr.includes('APPROVED_R2')) {
-                    statusBadge = '<span class="bg-blue-500/20 text-blue-400 border border-blue-500/30 px-2 py-0.5 rounded text-[10px]">R2 修正承認</span>';
-                }
-
-                let ceoBadge = cost >= 50000 
-                    ? '<span class="text-blue-400 font-semibold flex items-center gap-1"><i class="fa-brands fa-line text-xs"></i>LINE承認要</span>'
-                    : '<span class="text-gray-400">自動承認 (&lt;5万円)</span>';
-
-                tr.innerHTML = `
-                    <td class="p-3 text-gray-400">${createdTime}</td>
-                    <td class="p-3 text-white font-medium max-w-[200px] truncate" title="${taskName}">${taskName}</td>
-                    <td class="p-3 text-gray-300">¥${cost.toLocaleString()}</td>
-                    <td class="p-3 text-emerald-400 font-bold">$${revenue.toFixed(2)}</td>
-                    <td class="p-3">${statusBadge}</td>
-                    <td class="p-3">${ceoBadge}</td>
-                `;
-                tbody.appendChild(tr);
-            });
-        }
-
-        function updateChartWithLogs(records) {
-            if (!pnlChartInstance || !records || records.length === 0) return;
-
-            const sorted = [...records].reverse();
-            const labels = sorted.map(r => r.created_at ? r.created_at.substring(5, 10) : '件');
-            const revenues = sorted.map(r => r.price_usd || 0);
-            const profits = sorted.map(r => (r.price_usd || 0) * 0.83);
-
-            pnlChartInstance.data.labels = labels;
-            pnlChartInstance.data.datasets[0].data = revenues;
-            pnlChartInstance.data.datasets[1].data = profits;
-            pnlChartInstance.update();
-        }
-
-        async function triggerAutonomousLoop() {
-            const btn = document.getElementById('runLoopBtn');
-            const originalText = btn.innerHTML;
-            btn.disabled = true;
-            btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin text-xs"></i> <span>実行中...</span>';
-
-            showToast("自律成長ループ起動", "Qiitaからリアルタイムトレンドを取得し、Gemini ✕ DeepSeek-R1 ディベートを実行中...");
-
-            try {
-                const res = await fetch('/api/run-loop', { method: 'POST' });
-                if (res.ok) {
-                    setTimeout(async () => {
-                        await fetchRealDashboardData();
-                        showToast("自律ループ完了 🎉", "SQLite DBへ最新のP&Lと取引結果を記録しました！");
-                        btn.disabled = false;
-                        btn.innerHTML = originalText;
-                    }, 3500);
-                } else {
-                    btn.disabled = false;
-                    btn.innerHTML = originalText;
-                }
-            } catch (err) {
-                console.error(err);
-                btn.disabled = false;
-                btn.innerHTML = originalText;
-            }
-        }
-
-        function generateGeminiAdvice() {
-            const outputDiv = document.getElementById('advisorOutput');
-            outputDiv.innerHTML = '<div class="flex items-center gap-2 text-emerald-400"><i class="fa-solid fa-spinner fa-spin"></i><span>Gemini 3 Flash で現在の財務データを分析中...</span></div>';
-
-            setTimeout(() => {
-                outputDiv.innerHTML = `
-                    <div class="space-y-2">
-                        <div class="flex items-center justify-between text-xs border-b border-gray-800 pb-1">
-                            <span class="text-emerald-400 font-semibold">💡 Gemini 3 Flash 成長アドバイス</span>
-                            <span class="text-[10px] text-gray-500">リアルタイム分析結果</span>
-                        </div>
-                        <p class="text-gray-200 text-xs leading-relaxed">
-                            <strong>1. 高粗利率案件の維持戦略:</strong> 現在の平均粗利益率は83.1%と極めて健全です。エッジAI流動データ収集（Shibuya Pedestrian等）および LLM マルチエージェント最適化タスクは高い利幅を担保しています。
-                        </p>
-                        <p class="text-gray-200 text-xs leading-relaxed">
-                            <strong>2. スケールアウトの提案:</strong> LINE CEOの1タップ承認ログより、5万円未満の自動承認タスクの頻度を毎朝から「1日2回」へ拡大することで、月間純利益の約35%増加が見込まれます。
-                        </p>
-                    </div>
-                `;
-                showToast("AIアドバイス生成完了", "Gemini 3 Flash によるリアルタイム財務提案を出力しました。");
-            }, 1200);
-        }
-
-        function showToast(title, message) {
-            const container = document.getElementById('toastContainer');
-            const toast = document.createElement('div');
-            toast.className = 'bg-gray-900 border border-emerald-500/40 text-white p-3 rounded-xl shadow-xl flex items-start gap-3 max-w-sm transition duration-300 transform translate-y-2 opacity-0';
-            toast.innerHTML = `
-                <div class="text-emerald-400 mt-0.5"><i class="fa-solid fa-circle-check text-sm"></i></div>
-                <div>
-                    <h4 class="text-xs font-bold text-emerald-300">${title}</h4>
-                    <p class="text-[11px] text-gray-300 mt-0.5 leading-snug">${message}</p>
-                </div>
-            `;
-            container.appendChild(toast);
-
-            setTimeout(() => {
-                toast.classList.remove('translate-y-2', 'opacity-0');
-            }, 50);
-
-            setTimeout(() => {
-                toast.classList.add('opacity-0');
-                setTimeout(() => toast.remove(), 300);
-            }, 4000);
-        }
-
-        // Initialize on page load and fetch real data
-        window.onload = function() {
-            initChart();
-            fetchRealDashboardData();
-        };
-    </script>
+    // 初回ロード ＆ 10秒ごとの自動更新
+    fetchStats();
+    setInterval(fetchStats, 10000);
+  </script>
 </body>
 </html>
