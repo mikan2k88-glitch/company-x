@@ -18,22 +18,30 @@ class InternalExecutor:
 
     def __init__(self):
         self.validator = DeliveryValidator()
-        self.api_key = os.getenv("GEMINI_API_KEY")
-        # デフォルトモデルを gemini-3.8-flash に設定 (GEMINI_MODEL_NAME 環境変数で変更も可能)
         self.model_name = os.getenv("GEMINI_MODEL_NAME", "gemini-3.8-flash")
 
-        if self.api_key:
+    def _get_genai_client(self):
+        """
+        環境変数 GEMINI_API_KEY をリアルタイム取得し、
+        新公式 SDK (google-genai) または 従来 SDK (google-generativeai) を自動切り替え
+        """
+        api_key = os.getenv("GEMINI_API_KEY")
+        if not api_key:
+            return None, "GEMINI_API_KEY未設定 (環境変数 GEMINI_API_KEY が取得できません)"
+
+        # 1. 新公式 SDK (google-genai) の試行
+        try:
+            from google import genai
+            client = genai.Client(api_key=api_key)
+            return ("new_sdk", client), None
+        except Exception as e_new:
+            # 2. 従来 SDK (google-generativeai) の試行
             try:
-                import google.generativeai as genai
-                genai.configure(api_key=self.api_key)
-                self.genai = genai
-                logger.info(f"[InternalExecutor] Gemini API ({self.model_name}) の初期化に成功しました。")
-            except Exception as e:
-                logger.warning(f"[InternalExecutor] Google GenerativeAI 初期化警告: {e}")
-                self.genai = None
-        else:
-            self.genai = None
-            logger.warning("[InternalExecutor] GEMINI_API_KEY 未設定のため、ルールベース・フォールバックで稼働します。")
+                import google.generativeai as legacy_genai
+                legacy_genai.configure(api_key=api_key)
+                return ("legacy_sdk", legacy_genai), None
+            except Exception as e_legacy:
+                return None, f"ライブラリ読み込み失敗 (google-genai: {e_new} / legacy: {e_legacy})"
 
     def execute_task(self, task_type: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -147,16 +155,17 @@ class InternalExecutor:
         topic = payload.get("topic", "")
         context = payload.get("context", "")
 
-        if self.genai:
-            # 優先モデル gemini-3.8-flash -> 近接モデルの順で試行 (2.5系は除外)
-            candidate_models = [self.model_name, "gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.5-flash"]
+        client_info, error_msg = self._get_genai_client()
+
+        if client_info:
+            sdk_type, client = client_info
+            candidate_models = [self.model_name, "gemini-3.8-flash", "gemini-3.7-flash"]
             models_to_try = list(dict.fromkeys(candidate_models))
             
             last_exception = None
             for model_candidate in models_to_try:
                 try:
-                    logger.info(f"[InternalExecutor] Gemini API 試行モデル: {model_candidate}")
-                    model = self.genai.GenerativeModel(model_candidate)
+                    logger.info(f"[InternalExecutor] Gemini API 試行モデル ({sdk_type}): {model_candidate}")
                     prompt = f"""
 あなたはB2B専門の戦略コンサルタントおよび最高水準の技術アナリストです。
 以下のテーマおよび背景情報に基づき、クライアントへ即時納品可能な高精度かつ洗練されたリサーチレポートを作成してください。
@@ -186,18 +195,28 @@ class InternalExecutor:
 
 ※事実と深い考察に基づき、即戦力となる納品資料として構成してください。
 """
-                    response = model.generate_content(prompt)
-                    if response and response.text:
+                    if sdk_type == "new_sdk":
+                        response = client.models.generate_content(
+                            model=model_candidate,
+                            contents=prompt
+                        )
+                        text_output = response.text
+                    else:
+                        model = client.GenerativeModel(model_candidate)
+                        response = model.generate_content(prompt)
+                        text_output = response.text
+
+                    if text_output:
                         return {
                             "topic": topic,
-                            "report_markdown": response.text,
-                            "engine": model_candidate
+                            "report_markdown": text_output,
+                            "engine": f"{model_candidate} ({sdk_type})"
                         }
                 except Exception as e:
                     logger.warning(f"[InternalExecutor] モデル '{model_candidate}' 呼び出し失敗: {e}")
                     last_exception = e
 
-        fallback_reason = "GEMINI_API_KEY未設定" if not self.genai else f"APIエラー: {last_exception}"
+        fallback_reason = error_msg if not client_info else f"APIエラー: {last_exception}"
         logger.error(f"[InternalExecutor] リサーチ報告作成失敗 (フォールバック起動): {fallback_reason}")
 
         return {
