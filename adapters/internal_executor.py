@@ -2,7 +2,6 @@ import os
 import logging
 from typing import Dict, Any, Tuple, Optional
 
-# ロガーの設定
 logger = logging.getLogger("InternalExecutor")
 
 class InternalExecutor:
@@ -14,7 +13,7 @@ class InternalExecutor:
 
     def __init__(self):
         # 優先モデルは環境変数 GEMINI_MODEL_NAME から動的に取得（未設定時は汎用デフォルト）
-        self.default_model_name = os.getenv("GEMINI_MODEL_NAME", "gemini-2.0-flash")
+        self.default_model_name = os.getenv("GEMINI_MODEL_NAME", "gemini-3.8-flash")
 
     def _get_genai_client(self) -> Tuple[Optional[Tuple[str, Any]], Optional[str]]:
         """
@@ -30,9 +29,8 @@ class InternalExecutor:
             api_key = str(api_key).strip()
 
         if not api_key:
-            # 環境変数一覧を取得してデバッグ情報を構築
             found_keys = [k for k in os.environ.keys() if "GEMINI" in k.upper() or "GOOGLE" in k.upper()]
-            return None, f"APIキー未検出 (検索対象: GEMINI_API_KEY, GOOGLE_API_KEY等 / 発見キー候補: {found_keys})"
+            return None, f"GEMINI_API_KEY未設定 (検出キー候補: {found_keys})"
 
         # 1. 新公式 SDK (google-genai) の読み込み試行
         try:
@@ -90,12 +88,11 @@ class InternalExecutor:
 5. 展望と推奨アクション (Actionable Insights & Roadmap)
 """
 
-        # 試行する優先モデルリスト
         preferred_models = [
             self.default_model_name,
+            "gemini-3.8-flash",
             "gemini-2.0-flash",
-            "gemini-1.5-flash",
-            "gemini-1.5-pro"
+            "gemini-1.5-flash"
         ]
 
         last_error = ""
