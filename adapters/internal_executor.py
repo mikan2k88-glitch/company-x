@@ -19,7 +19,7 @@ class InternalExecutor:
     def __init__(self):
         self.validator = DeliveryValidator()
         self.api_key = os.getenv("GEMINI_API_KEY")
-        # デフォルトモデルを gemini-3.8-flash に設定（環境変数 GEMINI_MODEL_NAME でもオーバーライド可能）
+        # デフォルトモデルを gemini-3.8-flash に設定 (GEMINI_MODEL_NAME 環境変数で変更も可能)
         self.model_name = os.getenv("GEMINI_MODEL_NAME", "gemini-3.8-flash")
 
         if self.api_key:
@@ -148,9 +148,16 @@ class InternalExecutor:
         context = payload.get("context", "")
 
         if self.genai:
-            try:
-                model = self.genai.GenerativeModel(self.model_name)
-                prompt = f"""
+            # 優先モデル gemini-3.8-flash -> 近接モデルの順で試行 (2.5系は除外)
+            candidate_models = [self.model_name, "gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.5-flash"]
+            models_to_try = list(dict.fromkeys(candidate_models))
+            
+            last_exception = None
+            for model_candidate in models_to_try:
+                try:
+                    logger.info(f"[InternalExecutor] Gemini API 試行モデル: {model_candidate}")
+                    model = self.genai.GenerativeModel(model_candidate)
+                    prompt = f"""
 あなたはB2B専門の戦略コンサルタントおよび最高水準の技術アナリストです。
 以下のテーマおよび背景情報に基づき、クライアントへ即時納品可能な高精度かつ洗練されたリサーチレポートを作成してください。
 
@@ -179,19 +186,24 @@ class InternalExecutor:
 
 ※事実と深い考察に基づき、即戦力となる納品資料として構成してください。
 """
-                response = model.generate_content(prompt)
-                return {
-                    "topic": topic,
-                    "report_markdown": response.text,
-                    "engine": self.model_name
-                }
-            except Exception as e:
-                logger.warning(f"[InternalExecutor] Gemini API リサーチ報告作成失敗: {e}")
+                    response = model.generate_content(prompt)
+                    if response and response.text:
+                        return {
+                            "topic": topic,
+                            "report_markdown": response.text,
+                            "engine": model_candidate
+                        }
+                except Exception as e:
+                    logger.warning(f"[InternalExecutor] モデル '{model_candidate}' 呼び出し失敗: {e}")
+                    last_exception = e
+
+        fallback_reason = "GEMINI_API_KEY未設定" if not self.genai else f"APIエラー: {last_exception}"
+        logger.error(f"[InternalExecutor] リサーチ報告作成失敗 (フォールバック起動): {fallback_reason}")
 
         return {
             "topic": topic,
-            "report_markdown": f"# 【リサーチレポート】{topic}\n\n## 1. Executive Summary\n本レポートは「{topic}」に関する最新調査結果をまとめたものです。\n\n## 2. 市場・技術の最新動向\n最新技術の導入が進み、市場規模および応用範囲は拡大傾向にあります。\n\n## 3. 主要課題およびリスク要因\n初期導入コストおよび既存運用プロセスとの整合性が課題となります。\n\n## 4. 競合・選択肢の比較分析\n従来手法と比較し、全自動化アプローチが大幅な時間削減に貢献します。\n\n## 5. 展望と推奨アクション\n段階的な検証とモジュール単位での運用移行を強く推奨します。",
-            "engine": "internal_fallback_parser"
+            "report_markdown": f"# 【リサーチレポート】{topic}\n\n## 1. Executive Summary\n本レポートは「{topic}」に関する最新調査結果をまとめたものです。(※理由: {fallback_reason})\n\n## 2. 市場・技術の最新動向\n最新技術の導入が進み、市場規模および応用範囲は拡大傾向にあります。\n\n## 3. 主要課題およびリスク要因\n初期導入コストおよび既存運用プロセスとの整合性が課題となります。\n\n## 4. 競合・選択肢の比較分析\n従来手法と比較し、全自動化アプローチが大幅な時間削減に貢献します。\n\n## 5. 展望と推奨アクション\n段階的な検証とモジュール単位での運用移行を強く推奨します。",
+            "engine": f"internal_fallback_parser ({fallback_reason})"
         }
 
     def _process_content_generation(self, payload: Dict[str, Any]) -> Dict[str, Any]:
