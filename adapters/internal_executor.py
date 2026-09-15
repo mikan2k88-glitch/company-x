@@ -19,14 +19,15 @@ class InternalExecutor:
     def __init__(self):
         self.validator = DeliveryValidator()
         self.api_key = os.getenv("GEMINI_API_KEY")
-        self.model_name = "gemini-1.5-flash"
+        # デフォルトモデルを gemini-3.8-flash に設定（環境変数 GEMINI_MODEL_NAME でもオーバーライド可能）
+        self.model_name = os.getenv("GEMINI_MODEL_NAME", "gemini-3.8-flash")
 
         if self.api_key:
             try:
                 import google.generativeai as genai
                 genai.configure(api_key=self.api_key)
                 self.genai = genai
-                logger.info("[InternalExecutor] Gemini API の初期化に成功しました。")
+                logger.info(f"[InternalExecutor] Gemini API ({self.model_name}) の初期化に成功しました。")
             except Exception as e:
                 logger.warning(f"[InternalExecutor] Google GenerativeAI 初期化警告: {e}")
                 self.genai = None
@@ -81,14 +82,13 @@ class InternalExecutor:
                     }
                 else:
                     logger.warning(f"[InternalExecutor] 試行 {attempt} 品質検品不合格: {qa_reason}")
-                    time.sleep(1)  # リトライ前のショートバックオフ
+                    time.sleep(1)
 
             except Exception as e:
                 logger.error(f"[InternalExecutor] 試行 {attempt} 中に例外発生: {str(e)}", exc_info=True)
                 last_qa_reason = f"実行例外: {str(e)}"
                 time.sleep(1)
 
-        # 規定回数リトライしても品質基準に達しない場合
         logger.error(f"[InternalExecutor] {max_retries} 回の試行後も検品不合格のため QUALITY_HOLD に推移します。")
         return {
             "status": "QUALITY_HOLD",
@@ -129,7 +129,6 @@ class InternalExecutor:
             except Exception as e:
                 logger.warning(f"[InternalExecutor] Gemini API 呼び出し失敗。フォールバックパーサーに切り替えます: {e}")
 
-        # ルールベースの安全フォールバックパーサー
         return {
             "structured_output": json.dumps({
                 "extracted_date": "2026-09-15",
@@ -189,7 +188,6 @@ class InternalExecutor:
             except Exception as e:
                 logger.warning(f"[InternalExecutor] Gemini API リサーチ報告作成失敗: {e}")
 
-        # ルールベースフォールバック
         return {
             "topic": topic,
             "report_markdown": f"# 【リサーチレポート】{topic}\n\n## 1. Executive Summary\n本レポートは「{topic}」に関する最新調査結果をまとめたものです。\n\n## 2. 市場・技術の最新動向\n最新技術の導入が進み、市場規模および応用範囲は拡大傾向にあります。\n\n## 3. 主要課題およびリスク要因\n初期導入コストおよび既存運用プロセスとの整合性が課題となります。\n\n## 4. 競合・選択肢の比較分析\n従来手法と比較し、全自動化アプローチが大幅な時間削減に貢献します。\n\n## 5. 展望と推奨アクション\n段階的な検証とモジュール単位での運用移行を強く推奨します。",
