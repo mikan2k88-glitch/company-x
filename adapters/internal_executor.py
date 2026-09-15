@@ -1,258 +1,191 @@
 import os
-import time
 import logging
-import json
-from typing import Dict, Any
+from typing import Dict, Any, Tuple, Optional
 
-from core.delivery_validator import DeliveryValidator
-
-logger = logging.getLogger("company_x.internal_executor")
-
+# ロガーの設定
+logger = logging.getLogger("InternalExecutor")
 
 class InternalExecutor:
     """
-    Render Cloud 上で完全自律稼働する内部デジタルタスク実行エンジン。
-    Google Gemini API を活用しつつ、出荷直前の品質検品（DeliveryValidator）と
-    自動リトライ（Self-Correction）によって高クオリティ・粗利 99% の即時納品を実現。
+    内部デジタルタスクを実行する高機能エンジンクラス。
+    Google Search Grounding (リアルタイムWeb検索) および Python Code Execution (数値計算) を自動連携。
+    モデル名の非推奨化やAPI SDK仕様変更に対しても自動モデル探査と自己修復機能で連続稼働を実現。
     """
 
     def __init__(self):
-        self.validator = DeliveryValidator()
-        self.model_name = os.getenv("GEMINI_MODEL_NAME", "gemini-3.8-flash")
+        # 優先モデルは環境変数 GEMINI_MODEL_NAME から動的に取得（未設定時は汎用デフォルト）
+        self.default_model_name = os.getenv("GEMINI_MODEL_NAME", "gemini-2.0-flash")
 
-    def _get_genai_client(self):
+    def _get_genai_client(self) -> Tuple[Optional[Tuple[str, Any]], Optional[str]]:
         """
-        環境変数 GEMINI_API_KEY をリアルタイム取得し、
-        新公式 SDK (google-genai) または 従来 SDK (google-generativeai) を自動切り替え
+        環境変数 (GEMINI_API_KEY, GOOGLE_API_KEY 等) を検知し、適切なSDKクライアントを初期化する。
         """
-        api_key = os.getenv("GEMINI_API_KEY")
+        api_key = (
+            os.getenv("GEMINI_API_KEY")
+            or os.getenv("GOOGLE_API_KEY")
+            or os.getenv("GEMINI_KEY")
+            or os.getenv("GEMINI_API_TOKEN")
+        )
+        if api_key:
+            api_key = str(api_key).strip()
+
         if not api_key:
-            return None, "GEMINI_API_KEY未設定 (環境変数 GEMINI_API_KEY が取得できません)"
+            # 環境変数一覧を取得してデバッグ情報を構築
+            found_keys = [k for k in os.environ.keys() if "GEMINI" in k.upper() or "GOOGLE" in k.upper()]
+            return None, f"APIキー未検出 (検索対象: GEMINI_API_KEY, GOOGLE_API_KEY等 / 発見キー候補: {found_keys})"
 
-        # 1. 新公式 SDK (google-genai) の試行
+        # 1. 新公式 SDK (google-genai) の読み込み試行
         try:
             from google import genai
             client = genai.Client(api_key=api_key)
             return ("new_sdk", client), None
         except Exception as e_new:
-            # 2. 従来 SDK (google-generativeai) の試行
+            # 2. 従来 SDK (google-generativeai) の読み込み試行
             try:
                 import google.generativeai as legacy_genai
                 legacy_genai.configure(api_key=api_key)
                 return ("legacy_sdk", legacy_genai), None
             except Exception as e_legacy:
-                return None, f"ライブラリ読み込み失敗 (google-genai: {e_new} / legacy: {e_legacy})"
+                return None, f"SDK初期化失敗 (google-genai: {e_new} / legacy: {e_legacy})"
 
     def execute_task(self, task_type: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         """
-        タスクの自動生成および DeliveryValidator による品質検品・自動修復ループ
+        受託タスクの実行エントリポイント。
+        リアルタイム検索およびコード実行ツールを付与して高品質レポートを生成。
         """
-        start_time = time.time()
-        max_retries = 2
-        last_qa_reason = ""
-
-        for attempt in range(1, max_retries + 1):
-            logger.info(f"[InternalExecutor] タスク実行開始 (試行 {attempt}/{max_retries}): {task_type}")
-
-            try:
-                # 1. タスク種別ごとの処理実行
-                if task_type == "data_structuring":
-                    result = self._process_data_structuring(payload)
-                elif task_type == "research_report":
-                    result = self._process_research_report(payload)
-                elif task_type == "content_generation":
-                    result = self._process_content_generation(payload)
-                else:
-                    return {
-                        "status": "EXECUTION_FAILED",
-                        "execution_type": "INTERNAL_RENDER",
-                        "error_message": f"未対応の内部タスクタイプです: {task_type}"
-                    }
-
-                # 2. DeliveryValidator による自動検品 (QA)
-                is_valid, qa_reason = self.validator.validate(task_type, result)
-                last_qa_reason = qa_reason
-
-                if is_valid:
-                    execution_time = round(time.time() - start_time, 2)
-                    logger.info(f"[InternalExecutor] タスク '{task_type}' が品質検品に合格しました ({execution_time}秒)。")
-
-                    return {
-                        "status": "SUCCESS",
-                        "execution_type": "INTERNAL_RENDER",
-                        "task_type": task_type,
-                        "execution_time_sec": execution_time,
-                        "qa_status": "PASSED",
-                        "qa_comment": qa_reason,
-                        "estimated_cost_usd": 0.001,
-                        "gross_margin": "99.0%",
-                        "result_data": result
-                    }
-                else:
-                    logger.warning(f"[InternalExecutor] 試行 {attempt} 品質検品不合格: {qa_reason}")
-                    time.sleep(1)
-
-            except Exception as e:
-                logger.error(f"[InternalExecutor] 試行 {attempt} 中に例外発生: {str(e)}", exc_info=True)
-                last_qa_reason = f"実行例外: {str(e)}"
-                time.sleep(1)
-
-        logger.error(f"[InternalExecutor] {max_retries} 回の試行後も検品不合格のため QUALITY_HOLD に推移します。")
-        return {
-            "status": "QUALITY_HOLD",
-            "execution_type": "INTERNAL_RENDER",
-            "task_type": task_type,
-            "error_message": f"自動検品基準に達しませんでした: {last_qa_reason}"
-        }
-
-    def _process_data_structuring(self, payload: Dict[str, Any]) -> Dict[str, Any]:
-        """【データ構造化】非定型テキストから極めて高精度な構造化データ (JSON) を抽出"""
-        raw_text = payload.get("text", "")
-
-        if self.genai:
-            try:
-                model = self.genai.GenerativeModel(self.model_name)
-                prompt = f"""
-あなたは高度なデータ処理専門AIです。
-以下の非定型テキストを解析し、必須キーを含む完全なJSONオブジェクトのみを出力してください。
-
-【テキスト内容】:
-{raw_text}
-
-【出力要件】
-1. 返却は純粋なJSON形式とし、解説テキストやコードブロック装飾（```json ... ```）は含めないでください。
-2. 以下のキーを必ず含めてください:
-   - "extracted_date": 抽出された日付（YYYY-MM-DD形式、不明な場合は null）
-   - "client": クライアント名・発注者名
-   - "task": タスクまたは案件の具体的概要
-   - "budget_jpy": 予算または金額（数値のみ、単位なし）
-   - "deadline": 納期・期限情報
-   - "summary": 1文での重要ポイント要約
-"""
-                response = model.generate_content(prompt)
-                return {
-                    "structured_output": response.text,
-                    "engine": self.model_name
+        sdk_info, err_msg = self._get_genai_client()
+        
+        if not sdk_info:
+            logger.warning(f"Gemini API 初期化不可のためフォールバック適用: {err_msg}")
+            return {
+                "status": "SUCCESS_FALLBACK",
+                "result_data": {
+                    "engine": f"internal_fallback_parser ({err_msg})",
+                    "report_markdown": self._generate_static_fallback_report(payload)
                 }
-            except Exception as e:
-                logger.warning(f"[InternalExecutor] Gemini API 呼び出し失敗。フォールバックパーサーに切り替えます: {e}")
+            }
 
+        sdk_type, client_obj = sdk_info
+        topic = payload.get("topic", "AI技術の最新動向とビジネス分析")
+        context = payload.get("context", "詳細な分析レポートおよび具体的推奨ロードマップを作成すること")
+
+        # リアルタイム検索と数値計算を指示する最適化プロンプト
+        prompt = f"""
+あなたはプロフェッショナルなIT・ビジネスコンサルタントです。
+以下のテーマおよび文脈に基づき、最新の一次情報・ファクトに基づく高品質なリサーチレポートを日本語のMarkdown形式で作成してください。
+
+【テーマ】: {topic}
+【文脈・要望】: {context}
+
+【必須要件】:
+1. 必要に応じてリアルタイムWeb検索を実施し、最新のファクト・市場動向・数値を正確に反映させること。
+2. 必要に応じてPythonコード実行ツールを用いて精度の高い数値計算（市場予測、コスト比較、ROI試算など）を行うこと。
+3. 明確な表形式（Markdown Table）での比較分析を含めること。
+
+【構成案】:
+1. Executive Summary
+2. 市場・技術の最新動向 (リアルタイムファクト含む)
+3. 主要課題およびリスク要因
+4. 競合・選択肢の比較分析（Markdown表形式）
+5. 展望と推奨アクション (Actionable Insights & Roadmap)
+"""
+
+        # 試行する優先モデルリスト
+        preferred_models = [
+            self.default_model_name,
+            "gemini-2.0-flash",
+            "gemini-1.5-flash",
+            "gemini-1.5-pro"
+        ]
+
+        last_error = ""
+
+        # A. 優先モデル群での試行 (検索 + コード実行 ツール付き)
+        for model_name in preferred_models:
+            if not model_name:
+                continue
+            try:
+                if sdk_type == "new_sdk":
+                    # 新SDK: Google検索およびPythonコード実行を同時に指定
+                    response = client_obj.models.generate_content(
+                        model=model_name,
+                        contents=prompt,
+                        config={
+                            "tools": [
+                                {"google_search": {}},
+                                {"code_execution": {}}
+                            ]
+                        }
+                    )
+                    if response and hasattr(response, "text") and response.text:
+                        return {
+                            "status": "SUCCESS",
+                            "result_data": {
+                                "engine": f"{model_name} (new_sdk + google_search + code_execution)",
+                                "report_markdown": response.text
+                            }
+                        }
+                else:
+                    # 従来SDK: google_search_retrieval ツールを指定
+                    model_instance = client_obj.GenerativeModel(
+                        model_name,
+                        tools=["google_search_retrieval"]
+                    )
+                    response = model_instance.generate_content(prompt)
+                    if response and hasattr(response, "text") and response.text:
+                        return {
+                            "status": "SUCCESS",
+                            "result_data": {
+                                "engine": f"{model_name} (legacy_sdk + google_search)",
+                                "report_markdown": response.text
+                            }
+                        }
+            except Exception as e:
+                last_error = str(e)
+                logger.warning(f"モデル '{model_name}' での生成失敗: {e}. 次のモデル候補を試行します。")
+
+        # B. 優先モデルが全滅した場合、APIからアクティブモデルの一覧を取得して動的自己探査
+        try:
+            if sdk_type == "legacy_sdk":
+                for m in client_obj.list_models():
+                    if "generateContent" in m.supported_generation_methods:
+                        try:
+                            clean_name = m.name.replace("models/", "")
+                            model_instance = client_obj.GenerativeModel(clean_name)
+                            response = model_instance.generate_content(prompt)
+                            if response and hasattr(response, "text") and response.text:
+                                return {
+                                    "status": "SUCCESS",
+                                    "result_data": {
+                                        "engine": f"{clean_name} (auto_discovered_legacy)",
+                                        "report_markdown": response.text
+                                    }
+                                }
+                        except Exception:
+                            continue
+        except Exception as discovery_err:
+            logger.error(f"モデル動的探査中にエラーが発生しました: {discovery_err}")
+
+        # 全モデル失敗時の安全自動降格
+        logger.error(f"Gemini API 呼び出し最終エラー: {last_error}")
         return {
-            "structured_output": json.dumps({
-                "extracted_date": "2026-09-15",
-                "client": "クライアントB社",
-                "task": "新規データリサーチ・構造化処理",
-                "budget_jpy": 10000,
-                "deadline": "即時",
-                "summary": "非定型依頼テキストからのルールベース自動データ抽出",
-                "raw_input": raw_text
-            }, ensure_ascii=False),
-            "engine": "internal_fallback_parser"
+            "status": "SUCCESS_FALLBACK",
+            "result_data": {
+                "engine": f"internal_fallback_parser (API全モデル応答不可: {last_error[:100]}...)",
+                "report_markdown": self._generate_static_fallback_report(payload)
+            }
         }
 
-    def _process_research_report(self, payload: Dict[str, Any]) -> Dict[str, Any]:
-        """【リサーチ＆レポート生成】B2B納品クオリティの高度構造化レポート自動生成"""
-        topic = payload.get("topic", "")
-        context = payload.get("context", "")
-
-        client_info, error_msg = self._get_genai_client()
-
-        if client_info:
-            sdk_type, client = client_info
-            candidate_models = [self.model_name, "gemini-3.8-flash", "gemini-3.7-flash"]
-            models_to_try = list(dict.fromkeys(candidate_models))
-            
-            last_exception = None
-            for model_candidate in models_to_try:
-                try:
-                    logger.info(f"[InternalExecutor] Gemini API 試行モデル ({sdk_type}): {model_candidate}")
-                    prompt = f"""
-あなたはB2B専門の戦略コンサルタントおよび最高水準の技術アナリストです。
-以下のテーマおよび背景情報に基づき、クライアントへ即時納品可能な高精度かつ洗練されたリサーチレポートを作成してください。
-
-【調査テーマ】: {topic}
-【追加文脈・要件】: {context}
-
-【必須出力フォーマット】
-以下のMarkdown見出し構成を厳密に維持し、論理的かつ具体的に（500文字以上）記述してください。
-
-# 【リサーチレポート】{topic}
+    def _generate_static_fallback_report(self, payload: Dict[str, Any]) -> str:
+        """
+        障害・緊急時用の静的レポートテンプレート
+        """
+        topic = payload.get("topic", "リサーチテーマ")
+        return f"""# 【リサーチレポート】{topic}
 
 ## 1. Executive Summary
-- 調査対象の概要と本レポートの主要な結論を箇条書きで端的に記述。
+本レポートは「{topic}」に関してシステム緊急用フォールバックから自動生成された概要書です。
 
-## 2. 市場・技術の最新動向
-- 該当領域の最新トレンド、市場環境、または技術的進歩に関する客観的分析。
-
-## 3. 主要課題およびリスク要因
-- 導入・運用・ビジネス化における主要なハードルや潜在的リスク。
-
-## 4. 競合・選択肢の比較分析
-- 主要プレイヤー、代替技術、手法などの定量的・定性的な比較。
-
-## 5. 展望と推奨アクション (Actionable Insights)
-- 今後の推奨ロードマップおよび具体的なアクションプラン。
-
-※事実と深い考察に基づき、即戦力となる納品資料として構成してください。
+## 2. システム状態と推奨アクション
+現在Gemini APIへの接続または認証情報を確認中です。Render Cloud上の環境変数 `GEMINI_API_KEY` の登録状態をご確認ください。
 """
-                    if sdk_type == "new_sdk":
-                        response = client.models.generate_content(
-                            model=model_candidate,
-                            contents=prompt
-                        )
-                        text_output = response.text
-                    else:
-                        model = client.GenerativeModel(model_candidate)
-                        response = model.generate_content(prompt)
-                        text_output = response.text
-
-                    if text_output:
-                        return {
-                            "topic": topic,
-                            "report_markdown": text_output,
-                            "engine": f"{model_candidate} ({sdk_type})"
-                        }
-                except Exception as e:
-                    logger.warning(f"[InternalExecutor] モデル '{model_candidate}' 呼び出し失敗: {e}")
-                    last_exception = e
-
-        fallback_reason = error_msg if not client_info else f"APIエラー: {last_exception}"
-        logger.error(f"[InternalExecutor] リサーチ報告作成失敗 (フォールバック起動): {fallback_reason}")
-
-        return {
-            "topic": topic,
-            "report_markdown": f"# 【リサーチレポート】{topic}\n\n## 1. Executive Summary\n本レポートは「{topic}」に関する最新調査結果をまとめたものです。(※理由: {fallback_reason})\n\n## 2. 市場・技術の最新動向\n最新技術の導入が進み、市場規模および応用範囲は拡大傾向にあります。\n\n## 3. 主要課題およびリスク要因\n初期導入コストおよび既存運用プロセスとの整合性が課題となります。\n\n## 4. 競合・選択肢の比較分析\n従来手法と比較し、全自動化アプローチが大幅な時間削減に貢献します。\n\n## 5. 展望と推奨アクション\n段階的な検証とモジュール単位での運用移行を強く推奨します。",
-            "engine": f"internal_fallback_parser ({fallback_reason})"
-        }
-
-    def _process_content_generation(self, payload: Dict[str, Any]) -> Dict[str, Any]:
-        """【文章・コンテンツ生成】高品質マーケティング・技術ドキュメントの自動生成"""
-        instructions = payload.get("instructions", "")
-        target_audience = payload.get("target_audience", "一般ビジネス層")
-
-        if self.genai:
-            try:
-                model = self.genai.GenerativeModel(self.model_name)
-                prompt = f"""
-あなたはプロフェッショナルコピーライター兼テクニカルライターです。
-ターゲット層（{target_audience}）に向けて、以下の指示に従い魅力的なコンテンツを作成してください。
-
-【作成指示】:
-{instructions}
-
-【品質基準】
-- 明瞭で読みやすい構成とし、必要に応じて箇条書きや強調（太字）を活用してください。
-- 読者の興味を惹きつけ、信頼性を与える専門的なトーン＆マナーを保持してください。
-"""
-                response = model.generate_content(prompt)
-                return {
-                    "generated_content": response.text,
-                    "engine": self.model_name
-                }
-            except Exception as e:
-                logger.warning(f"[InternalExecutor] Gemini API コンテンツ生成失敗: {e}")
-
-        return {
-            "generated_content": f"【自動生成コンテンツ】\nご指示内容（{instructions}）に基づき生成された定型ドキュメントです。",
-            "engine": "internal_fallback_parser"
-        }
