@@ -2,6 +2,7 @@ import os
 import sys
 import time
 import logging
+import sqlite3
 from typing import Dict, Any, Optional
 from contextlib import asynccontextmanager
 
@@ -127,7 +128,6 @@ async def lifespan(app: FastAPI):
     logger.info("カンパニーX システムをシャットダウンしました。")
 
 
-# Uvicorn 起動用の ASGI アプリケーションインスタンス (必須)
 app = FastAPI(
     title="Company X - Autonomous Operations Platform",
     version="3.2.0",
@@ -266,7 +266,7 @@ class TaskExecuteRequest(BaseModel):
 
 
 # ==========================================
-# 4. API エンドポイント
+# 4. API エンドポイント (ダッシュボード P&L 分離取得追加)
 # ==========================================
 
 @app.get("/", response_class=HTMLResponse)
@@ -287,6 +287,48 @@ async def health_check():
         "platform": "FastAPI / Render Cloud",
         "version": "v3.2.0"
     }
+
+
+@app.get("/api/v1/dashboard/stats")
+async def get_dashboard_stats():
+    """
+    二輪駆動（内部デジタル 99% vs Gateway X 83%）の P&L を分離集計する API
+    """
+    try:
+        conn = sqlite3.connect(repository.db_path)
+        cursor = conn.cursor()
+        cursor.execute("SELECT execution_type, revenue_jpy, cost_jpy, gross_margin, created_at FROM execution_logs WHERE status = 'EXECUTED'")
+        rows = cursor.fetchall()
+        conn.close()
+
+        stats = {
+            "internal": {"revenue": 0, "cost": 0, "profit": 0, "count": 0, "margin_label": "99.0%"},
+            "gateway_x": {"revenue": 0, "cost": 0, "profit": 0, "count": 0, "margin_label": "83.0%"},
+            "total": {"revenue": 0, "cost": 0, "profit": 0, "count": 0}
+        }
+
+        for exec_type, rev, cost, margin, created_at in rows:
+            profit = rev - cost
+            stats["total"]["revenue"] += rev
+            stats["total"]["cost"] += cost
+            stats["total"]["profit"] += profit
+            stats["total"]["count"] += 1
+
+            if "INTERNAL" in exec_type:
+                stats["internal"]["revenue"] += rev
+                stats["internal"]["cost"] += cost
+                stats["internal"]["profit"] += profit
+                stats["internal"]["count"] += 1
+            else:
+                stats["gateway_x"]["revenue"] += rev
+                stats["gateway_x"]["cost"] += cost
+                stats["gateway_x"]["profit"] += profit
+                stats["gateway_x"]["count"] += 1
+
+        return {"status": "SUCCESS", "data": stats}
+    except Exception as e:
+        logger.error(f"ダッシュボード統計取得エラー: {e}")
+        return JSONResponse(status_code=500, content={"status": "ERROR", "detail": str(e)})
 
 
 @app.post("/api/v1/task/execute")
