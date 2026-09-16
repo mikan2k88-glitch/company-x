@@ -84,7 +84,7 @@ class InternalExecutor:
 5. 展望と推奨アクション (Actionable Insights & Roadmap)
 """
 
-        # Gemini 3.x 系統のみで構成された堅牢なフォールバック・チェーン
+        # Gemini 3.8 Flashを最上位とする安全な3.x系統フォールバック・チェーン
         fallback_models = [
             self.default_model_name,
             "gemini-3.8-flash",
@@ -93,7 +93,6 @@ class InternalExecutor:
             "gemini-3.5-flash-lite"
         ]
 
-        # 重複を排除しつつ順序を維持
         seen = set()
         unique_models = [m for m in fallback_models if not (m in seen or seen.add(m))]
 
@@ -123,9 +122,10 @@ class InternalExecutor:
                             }
                         }
                 else:
+                    # レガシーSDKの場合は正しく google_search ツールを指定
                     model_instance = client_obj.GenerativeModel(
                         model_name,
-                        tools=["google_search_retrieval"]
+                        tools=[{"google_search": {}}]
                     )
                     response = model_instance.generate_content(prompt)
                     if response and hasattr(response, "text") and response.text:
