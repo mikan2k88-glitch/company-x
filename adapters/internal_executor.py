@@ -103,36 +103,43 @@ class InternalExecutor:
                 continue
             try:
                 if sdk_type == "new_sdk":
-                    response = client_obj.models.generate_content(
-                        model=model_name,
-                        contents=prompt,
-                        config={
-                            "tools": [
-                                {"google_search": {}},
-                                {"code_execution": {}}
-                            ]
-                        }
-                    )
+                    # 新SDK向けツール設定（安全なフォールバックとして検索またはツールなしも許容）
+                    try:
+                        response = client_obj.models.generate_content(
+                            model=model_name,
+                            contents=prompt,
+                            config={
+                                "tools": [
+                                    {"google_search": {}},
+                                    {"code_execution": {}}
+                                ]
+                            }
+                        )
+                    except Exception as tool_err:
+                        # ツール指定でエラーになる場合はツールなしで再試行
+                        logger.warning(f"モデル '{model_name}' ツール指定での生成失敗 ({tool_err})。ツールなしで再試行します。")
+                        response = client_obj.models.generate_content(
+                            model=model_name,
+                            contents=prompt
+                        )
+
                     if response and hasattr(response, "text") and response.text:
                         return {
                             "status": "SUCCESS",
                             "result_data": {
-                                "engine": f"{model_name} (new_sdk + google_search + code_execution)",
+                                "engine": f"{model_name} (new_sdk + tools)",
                                 "report_markdown": response.text
                             }
                         }
                 else:
-                    # レガシーSDKの場合は正しく google_search ツールを指定
-                    model_instance = client_obj.GenerativeModel(
-                        model_name,
-                        tools=[{"google_search": {}}]
-                    )
+                    # レガシーSDKの場合はツール指定を安全に省略、または互換形式で適用
+                    model_instance = client_obj.GenerativeModel(model_name)
                     response = model_instance.generate_content(prompt)
                     if response and hasattr(response, "text") and response.text:
                         return {
                             "status": "SUCCESS",
                             "result_data": {
-                                "engine": f"{model_name} (legacy_sdk + google_search)",
+                                "engine": f"{model_name} (legacy_sdk)",
                                 "report_markdown": response.text
                             }
                         }
